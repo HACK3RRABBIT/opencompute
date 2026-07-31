@@ -14,10 +14,20 @@ the target's terms of service.
 
 ## Features
 
-- **Multi-source discovery** — crt.sh, CertSpotter, HackerTarget, Shodan (free web
+- **Multi-source discovery** — masscan (raw-socket internet-wide sweep, the
+  primary source), plus crt.sh, CertSpotter, HackerTarget, Shodan (free web
   search + optional paid API), LeakIX, Censys, and a lightweight TCP port-sweep.
   All free-tier sources work with zero configuration; Shodan/LeakIX/Censys can be
   upgraded with your own API key from the Settings tab for deeper coverage.
+- **masscan internet-wide sweep** — scans the entire IPv4 space (`0.0.0.0/0`) for
+  open Ollama ports, long-lived and resumable (stopping saves `paused.conf` and
+  starting continues from where it left off). Uses almost no bandwidth
+  (~0.5 Mbps at 2000 pps) and finds *real* exposed nodes that no passive index
+  covers. Needs the masscan binary:
+  ```bash
+  apt install masscan
+  sudo setcap cap_net_raw,cap_net_admin+ep $(which masscan)   # one-time
+  ```
 - **Real validation, not just a port check** — every candidate node gets an actual
   generation request sent to it. Responses are run through multiple honeypot/fake
   filters:

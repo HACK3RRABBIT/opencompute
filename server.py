@@ -173,12 +173,13 @@ async def list_all_models(include_archived: bool = False, working_only: bool = T
     """By default: only real, currently-working models (working=1), one row per
     model with an aggregated node_count — NOT one row per (model, node) pair.
     Pass expand=true to get the flat per-node breakdown (e.g. to pick which
-    specific node to hit), or working_only=false to also see untested/dead
-    candidates (useful for debugging why a model isn't showing up)."""
+    specific node to hit, or to see why a model failed via fail_reason), or
+    working_only=false to also see untested/dead candidates."""
     conn = db()
     if expand:
-        q = """SELECT m.model_name, m.working, m.param_size_b, m.is_big,
-                      n.host, n.port, n.scheme, n.status, n.source, n.archived, n.archive_reason
+        q = """SELECT m.id as model_row_id, m.model_name, m.working, m.param_size_b, m.is_big,
+                      m.fail_reason, m.last_error, m.last_tested,
+                      n.id as node_id, n.host, n.port, n.scheme, n.status, n.source, n.archived, n.archive_reason
                FROM models m JOIN nodes n ON m.node_id = n.id"""
         conds = []
         if not include_archived:
@@ -208,6 +209,65 @@ async def list_all_models(include_archived: bool = False, working_only: bool = T
     conn.close()
     return [dict(r) for r in rows]
 
+@app.get("/api/models/failed")
+async def list_failed_models(reason: str = None):
+    """Models that aren't currently working, grouped with their fail_reason so
+    the UI can show a badge: 'temporarily unavailable' (worth a manual retest —
+    OOM/model-loading/node-briefly-down) vs 'confirmed fake' (honeypot/echo-bot,
+    not worth retrying)."""
+    conn = db()
+    q = """SELECT m.id as model_row_id, m.model_name, m.fail_reason, m.last_error, m.last_tested,
+                  n.id as node_id, n.host, n.port, n.scheme, n.status, n.source
+           FROM models m JOIN nodes n ON m.node_id = n.id
+           WHERE m.working = 0 AND n.archived = 0"""
+    args = []
+    if reason:
+        q += " AND m.fail_reason = ?"
+        args.append(reason)
+    q += " ORDER BY m.last_tested DESC LIMIT 500"
+    rows = conn.execute(q, args).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+class RetestModel(BaseModel):
+    node_id: str
+    model_name: str
+
+@app.post("/api/models/retest")
+async def retest_one_model(body: RetestModel):
+    """Manually re-run the real-generation test for one specific (node, model)
+    pair right now — e.g. a node that failed with 'temp_unavailable' (OOM /
+    still loading) a few minutes ago might have recovered. Runs in FastAPI's
+    threadpool since scanner.retest_model() makes a blocking HTTP call."""
+    from starlette.concurrency import run_in_threadpool
+    result = await run_in_threadpool(scanner.retest_model, body.node_id, body.model_name)
+    return result
+
+_retest_state = {"running": False, "checked": 0, "recovered": 0, "total": 0}
+
+@app.post("/api/models/retest-failed")
+async def retest_all_failed():
+    """Kick off a bulk-retest of every model whose last failure looks transient
+    (OOM, node briefly down, timeout) rather than confirmed-fake. Runs in a
+    background thread (like the scanner) so it doesn't block the API/dashboard
+    while potentially hundreds of nodes are being re-checked — poll
+    /api/models/retest-status for progress."""
+    if _retest_state["running"]:
+        return {"status": "already_running", **_retest_state}
+    def _run():
+        _retest_state.update({"running": True, "checked": 0, "recovered": 0, "total": 0})
+        try:
+            result = scanner.retest_failed_models()
+            _retest_state.update(checked=result["checked"], recovered=result["recovered"])
+        finally:
+            _retest_state["running"] = False
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started"}
+
+@app.get("/api/models/retest-status")
+async def retest_status():
+    return dict(_retest_state)
+
 @app.get("/api/stats")
 async def stats():
     conn = db()
@@ -225,6 +285,10 @@ async def stats():
     conn.close()
     state = scanner.get_state()
     state["continuous"] = scanner.is_continuous_running()
+    try:
+        state["masscan"] = scanner.masscan_status()
+    except Exception:
+        pass
     return {"total_nodes": total, "verified": verified, "alive": alive, "archived": archived,
             "working_models": working_models, "total_models": total_models,
             "big_models": big_models,
@@ -378,6 +442,36 @@ async def set_continuous_interval(body: ContinuousIntervalUpdate):
         raise HTTPException(400, "interval_seconds must be >= 30")
     scanner.set_setting("continuous_interval", str(body.interval_seconds))
     return {"ok": True, "interval_seconds": body.interval_seconds}
+
+# ── Masscan (internet-wide raw-socket sweep) ─────────────────────────
+
+@app.get("/api/masscan/status")
+async def masscan_status():
+    """Current sweep state: running, pid, % of 0.0.0.0/0 done, open ports found."""
+    return scanner.masscan_status()
+
+@app.post("/api/masscan/start")
+async def masscan_start():
+    return scanner.start_masscan()
+
+@app.post("/api/masscan/stop")
+async def masscan_stop():
+    return scanner.stop_masscan()
+
+class MasscanConfigUpdate(BaseModel):
+    target: str | None = None
+    rate: int | None = None
+    ports: str | None = None
+    excludes: str | None = None
+
+@app.get("/api/settings/masscan")
+async def get_masscan_settings():
+    return scanner.get_masscan_config()
+
+@app.post("/api/settings/masscan")
+async def set_masscan_settings(body: MasscanConfigUpdate):
+    return scanner.set_masscan_config(target=body.target, rate=body.rate,
+                                      ports=body.ports, excludes=body.excludes)
 
 @app.post("/api/scan/start")
 async def start_scan(include_seed: bool = True):

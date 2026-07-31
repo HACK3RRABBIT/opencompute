@@ -281,6 +281,38 @@
           </table>
         </div>
       </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span><span data-i18n="failedModelsTitle">Not Working (with reason)</span> <span id="failedModelCount" style="color:var(--muted-foreground)"></span></span>
+          <span class="controls">
+            <select id="failedReasonFilter" onchange="renderFailedModels()">
+              <option value="" data-i18n="allReasons">— All reasons</option>
+              <option value="temp_unavailable" data-i18n="reasonTempUnavailable">Temporarily unavailable (OOM/loading)</option>
+              <option value="no_response" data-i18n="reasonNoResponse">No response / timeout</option>
+              <option value="unreachable" data-i18n="reasonUnreachable">Unreachable</option>
+              <option value="instruction_not_followed" data-i18n="reasonInstructionFailed">Confirmed fake (honeypot)</option>
+              <option value="prompt_echo" data-i18n="reasonPromptEcho">Confirmed fake (echo-bot)</option>
+              <option value="honeypot_farm_fingerprint_reuse" data-i18n="reasonFarm">Confirmed fake (honeypot farm)</option>
+              <option value="credit_required" data-i18n="reasonCredit">Needs paid credit</option>
+            </select>
+            <button class="small" onclick="retestAllRecoverable()" data-i18n="retestAllBtn">🔁 Retest all recoverable</button>
+          </span>
+        </div>
+        <div class="panel-body table-scroll" style="padding:0">
+          <table id="failedModelsTable">
+            <thead><tr>
+              <th data-i18n="colModel">Model</th>
+              <th data-i18n="colNode">Node</th>
+              <th data-i18n="colReason">Reason</th>
+              <th data-i18n="colLastTested">Last tested</th>
+              <th></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="retestLog" style="font-size:12px;color:var(--muted-foreground);padding:8px 16px"></div>
+      </div>
     </div>
 
     <!-- ═══════════ NODES TAB ═══════════ -->
@@ -348,6 +380,43 @@
       </div>
 
       <div class="panel">
+        <div class="panel-head" data-i18n="masscanSettings">Masscan (Internet-wide sweep)</div>
+        <div class="panel-body">
+          <div class="settings-desc" style="margin-bottom:12px" data-i18n="masscanDesc">
+            Raw-socket scan of the whole IPv4 space for open Ollama ports. Long-lived and resumable — stopping saves a resume point (paused.conf), starting continues where it left off. Uses almost no bandwidth (~0.5 Mbps at 2000 pps).
+          </div>
+          <div id="masscanStatus" style="font-size:12px;margin-bottom:12px;color:var(--muted-foreground)"></div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label" data-i18n="masscanTarget">Target</div>
+              <div class="settings-desc">CIDR range — default 0.0.0.0/0 (all IPv4)</div>
+            </div>
+            <input type="text" id="masscanTargetInput" style="width:160px">
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label" data-i18n="masscanRate">Rate (packets/sec)</div>
+              <div class="settings-desc">100 minimum — 2000 default (~25 days for full /0), 10000+ is aggressive</div>
+            </div>
+            <input type="number" id="masscanRateInput" min="100" style="width:100px">
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label" data-i18n="masscanPorts">Ports</div>
+              <div class="settings-desc">Comma-separated — more ports = slower sweep</div>
+            </div>
+            <input type="text" id="masscanPortsInput" style="width:120px">
+          </div>
+          <div class="controls" style="margin-top:12px">
+            <button onclick="saveMasscanConfig()" data-i18n="save">Save</button>
+            <button onclick="startMasscan()">▶ <span data-i18n="masscanStart">Start Sweep</span></button>
+            <button class="stop" onclick="stopMasscan()">⏹ <span data-i18n="masscanStop">Stop Sweep</span></button>
+          </div>
+          <div id="masscanLog" style="font-size:11px;color:var(--muted-foreground);margin-top:8px"></div>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-head" data-i18n="continuousSettings">Continuous Scan</div>
         <div class="panel-body">
           <div class="settings-row">
@@ -379,6 +448,13 @@ const I18N = {
     nodesTitle: "نودها", colAddress: "آدرس:پورت", colStatus: "وضعیت", colModels: "مدل‌ها",
     colLatency: "تأخیر", colSource: "منبع", colSize: "اندازه", colSourceCol: "منبع",
     modelsTitle: "مدل‌های کارکننده", colModel: "مدل", colNode: "نود", colRealStatus: "وضعیت واقعی", colNodeCount: "تعداد نود", showAllModels: "نمایش تست‌نشده/مرده هم",
+    failedModelsTitle: "کار نمی‌کند (با دلیل)", allReasons: "— همه دلایل",
+    reasonTempUnavailable: "موقتاً در دسترس نیست (کمبود حافظه/در حال بارگذاری)",
+    reasonNoResponse: "بدون پاسخ / تایم‌اوت", reasonUnreachable: "غیرقابل دسترسی",
+    reasonInstructionFailed: "فیک تأییدشده (تله)", reasonPromptEcho: "فیک تأییدشده (ربات اکو)",
+    reasonFarm: "فیک تأییدشده (مزرعه‌ی تله)", reasonCredit: "نیاز به کردیت پولی",
+    retestAllBtn: "🔁 تست دوباره همه‌ی قابل‌بازیابی‌ها", retestBtn: "تست دوباره",
+    colReason: "دلیل", colLastTested: "آخرین تست",
     statTotalNodes: "کل نودها", statVerified: "تأیید شده (تست واقعی)", statWorkingModels: "مدل کار می‌کند",
     statTotalModels: "کل مدل‌ها دیده شده", statBigModels: "مدل‌های بزرگ و قدرتمند", statArchived: "آرشیو شده (نیاز به کردیت)",
     noNodes: "هنوز نودی پیدا نشده — اسکن رو شروع کن",
@@ -397,6 +473,12 @@ const I18N = {
     src_hackertarget: "HackerTarget (زیردامنه)", src_shodan_web: "Shodan (وب‌سرچ)", src_shodan_api: "Shodan (API واقعی)",
     src_leakix: "LeakIX (API)", src_censys: "Censys (API)",
     src_port_sweep: "اسکن پورت", src_manual_seed: "لیست دستی اولیه",
+    src_masscan: "Masscan (اسکن سراسری اینترنت)",
+    masscanSettings: "Masscan (اسکن سراسری اینترنت)",
+    masscanDesc: "اسکن خام کل فضای IPv4 برای پورت‌های باز اولاما. طولانی‌مدت و قابل ادامه — توقف، نقطه ادامه (paused.conf) رو ذخیره می‌کنه و شروع، از همون‌جا ادامه می‌ده. پهنای باند تقریباً صفر (~۰.۵ مگابیت در نرخ ۲۰۰۰).",
+    masscanTarget: "هدف", masscanRate: "نرخ (بسته/ثانیه)", masscanPorts: "پورت‌ها",
+    masscanStart: "شروع اسکن", masscanStop: "توقف اسکن",
+    masscanRunning: "در حال اسکن", masscanStopped: "متوقف", masscanError: "خطا",
     scannerKeysSettings: "کلیدهای API منابع اسکن",
     scannerKeysDesc: "برای هر منبع، کلید API خودت رو وارد کن. قبل از فعال‌شدن، سیستم به‌صورت خودکار کلید رو تست می‌کنه.",
   },
@@ -410,6 +492,13 @@ const I18N = {
     nodesTitle: "Nodes", colAddress: "Host:Port", colStatus: "Status", colModels: "Models",
     colLatency: "Latency", colSource: "Source", colSize: "Size", colSourceCol: "Source",
     modelsTitle: "Working Models", colModel: "Model", colNode: "Node", colRealStatus: "Real Status", colNodeCount: "# Nodes", showAllModels: "Show untested/dead too",
+    failedModelsTitle: "Not Working (with reason)", allReasons: "— All reasons",
+    reasonTempUnavailable: "Temporarily unavailable (OOM/loading)",
+    reasonNoResponse: "No response / timeout", reasonUnreachable: "Unreachable",
+    reasonInstructionFailed: "Confirmed fake (honeypot)", reasonPromptEcho: "Confirmed fake (echo-bot)",
+    reasonFarm: "Confirmed fake (honeypot farm)", reasonCredit: "Needs paid credit",
+    retestAllBtn: "🔁 Retest all recoverable", retestBtn: "Retest",
+    colReason: "Reason", colLastTested: "Last tested",
     statTotalNodes: "Total Nodes", statVerified: "Verified (real test)", statWorkingModels: "Working Models",
     statTotalModels: "Total Models Seen", statBigModels: "Big/Powerful Models", statArchived: "Archived (needs credit)",
     noNodes: "No nodes found yet — start a scan",
@@ -428,6 +517,12 @@ const I18N = {
     src_hackertarget: "HackerTarget (subdomains)", src_shodan_web: "Shodan (web search)", src_shodan_api: "Shodan (real API)",
     src_leakix: "LeakIX (API)", src_censys: "Censys (API)",
     src_port_sweep: "Port sweep", src_manual_seed: "Manual seed list",
+    src_masscan: "Masscan (internet-wide)",
+    masscanSettings: "Masscan (Internet-wide sweep)",
+    masscanDesc: "Raw-socket scan of the whole IPv4 space for open Ollama ports. Long-lived and resumable — stopping saves a resume point (paused.conf), starting continues where it left off. Uses almost no bandwidth (~0.5 Mbps at 2000 pps).",
+    masscanTarget: "Target", masscanRate: "Rate (packets/sec)", masscanPorts: "Ports",
+    masscanStart: "Start Sweep", masscanStop: "Stop Sweep",
+    masscanRunning: "Running", masscanStopped: "Stopped", masscanError: "Error",
     scannerKeysSettings: "Scan Source API Keys",
     scannerKeysDesc: "Enter your own API key for each source. The system tests it automatically before enabling.",
   }
@@ -436,7 +531,7 @@ let LANG = localStorage.getItem('oc_lang') || 'en';
 let CURRENT_TAB = 'dashboard';
 let API_KEY_VISIBLE = false;
 let SORT_STATE = { nodes: {key: 'latency_ms', dir: 1}, models: {key: 'model_name', dir: 1} };
-let LAST_NODES = [], LAST_MODELS = [], LAST_SOURCES = [];
+let LAST_NODES = [], LAST_MODELS = [], LAST_SOURCES = [], LAST_FAILED_MODELS = [];
 
 function t(key) { return I18N[LANG][key] || key; }
 
@@ -466,7 +561,7 @@ function setTab(tabName) {
     { dashboard: 'navDashboard', models: 'navModels', nodes: 'navNodes', settings: 'navSettings' }[tabName]
   );
   if (tabName === 'nodes') loadNodes();
-  if (tabName === 'models') loadModels();
+  if (tabName === 'models') { loadModels(); loadFailedModels(); }
   if (tabName === 'settings') loadSettings();
 }
 
@@ -499,7 +594,13 @@ async function refresh() {
     logEl.innerText = `⏳ ${t('scanning')}: ${s.phase} — ${t('checked')} ${s.checked}/${s.total} — ${t('found')} ${s.found} (${t('verified')} ${s.verified})${roundTxt}`;
   } else {
     logEl.className = '';
-    logEl.innerText = stats.last_scan ? `${t('ready')} ${t('lastScan')}: ${stats.last_scan.found} ${t('found2')} / ${stats.last_scan.verified} ${t('verified2')}` : t('ready');
+    const mc = s.masscan;
+    if (mc && mc.running) {
+      const pct = mc.percent_done != null ? `${mc.percent_done.toFixed(3)}%` : '…';
+      logEl.innerText = `🛰 masscan ${t('masscanRunning')}: ${pct} — ${t('found')} ${mc.found ?? 0} — ${stats.last_scan ? `${t('lastScan')}: ${stats.last_scan.found}/${stats.last_scan.verified}` : ''}`;
+    } else {
+      logEl.innerText = stats.last_scan ? `${t('ready')} ${t('lastScan')}: ${stats.last_scan.found} ${t('found2')} / ${stats.last_scan.verified} ${t('verified2')}` : t('ready');
+    }
   }
   document.getElementById('footerState').innerText = s.running ? t('scanning2') : t('idle');
   document.getElementById('topScanState').innerText = s.running ? `${s.phase} (${s.checked}/${s.total})` : '';
@@ -629,6 +730,67 @@ function renderModels() {
   }).join('') : `<tr class="empty-row"><td colspan="4">${t('noModels')}</td></tr>`;
 }
 
+const RECOVERABLE_REASONS = new Set(['temp_unavailable', 'no_response', 'unreachable']);
+const REASON_KEY = {
+  temp_unavailable: 'reasonTempUnavailable', no_response: 'reasonNoResponse',
+  unreachable: 'reasonUnreachable', instruction_not_followed: 'reasonInstructionFailed',
+  prompt_echo: 'reasonPromptEcho', honeypot_farm_fingerprint_reuse: 'reasonFarm',
+  credit_required: 'reasonCredit',
+};
+
+async function loadFailedModels() {
+  LAST_FAILED_MODELS = await (await fetch('/api/models/failed')).json();
+  document.getElementById('failedModelCount').innerText = '(' + LAST_FAILED_MODELS.length + ')';
+  renderFailedModels();
+}
+
+function renderFailedModels() {
+  const reasonFilter = document.getElementById('failedReasonFilter').value;
+  const rows = (LAST_FAILED_MODELS || []).filter(m => !reasonFilter || m.fail_reason === reasonFilter);
+  document.querySelector('#failedModelsTable tbody').innerHTML = rows.length ? rows.map(m => {
+    const recoverable = RECOVERABLE_REASONS.has(m.fail_reason);
+    const reasonLabel = m.fail_reason ? t(REASON_KEY[m.fail_reason] || m.fail_reason) : (LANG === 'fa' ? 'نامشخص' : 'unknown');
+    const badgeClass = recoverable ? 'alive' : 'dead';
+    return `
+    <tr>
+      <td>${m.model_name}</td>
+      <td style="color:var(--muted-foreground)">${m.scheme}://${m.host}:${m.port}</td>
+      <td><span class="badge ${badgeClass}" title="${(m.last_error || '').replace(/"/g,'')}">${reasonLabel}</span></td>
+      <td style="color:var(--muted-foreground);font-size:11px">${m.last_tested || '-'}</td>
+      <td>${recoverable ? `<button class="small" onclick="retestOneModel('${m.node_id}', '${m.model_name.replace(/'/g,"\\'")}', this)">🔁 ${t('retestBtn')}</button>` : ''}</td>
+    </tr>`;
+  }).join('') : `<tr class="empty-row"><td colspan="5">${LANG === 'fa' ? 'موردی نیست' : 'Nothing here'}</td></tr>`;
+}
+
+async function retestOneModel(nodeId, modelName, btnEl) {
+  if (btnEl) { btnEl.disabled = true; btnEl.innerText = '⏳'; }
+  try {
+    const res = await (await fetch('/api/models/retest', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ node_id: nodeId, model_name: modelName })
+    })).json();
+    document.getElementById('retestLog').innerText = res.working
+      ? `✅ ${modelName} @ ${nodeId} — ${LANG === 'fa' ? 'الان کار می‌کند!' : 'now working!'}`
+      : `❌ ${modelName} @ ${nodeId} — ${res.fail_reason || 'still failing'}`;
+  } catch (e) {
+    document.getElementById('retestLog').innerText = `❌ ${e}`;
+  }
+  await loadFailedModels();
+  await loadModels();
+  await refresh();
+}
+
+async function retestAllRecoverable() {
+  document.getElementById('retestLog').innerText = LANG === 'fa' ? 'در حال retest دسته‌جمعی...' : 'Bulk retesting...';
+  const res = await (await fetch('/api/models/retest-failed', { method: 'POST' })).json();
+  document.getElementById('retestLog').innerText = LANG === 'fa'
+    ? `✅ ${res.checked} مدل بررسی شد — ${res.recovered} تا الان کار می‌کنند`
+    : `✅ Checked ${res.checked} models — ${res.recovered} are now working`;
+  await loadFailedModels();
+  await loadModels();
+  await refresh();
+}
+
 async function startScan() {
   await fetch('/api/scan/start', { method: 'POST' });
   refresh();
@@ -687,7 +849,62 @@ async function loadSettings() {
       <div class="toggle ${enabled ? 'on' : ''}" onclick="toggleSource('${key}', this)"><div class="toggle-knob"></div></div>
     </div>`).join('');
 
+  await loadMasscanSettings();
   await loadScannerKeys();
+}
+
+// ── Masscan settings ──
+function renderMasscanStatus(status) {
+  const el = document.getElementById('masscanStatus');
+  if (!el) return;
+  const cfg = status.config || {};
+  let txt;
+  if (status.running) {
+    const pct = status.percent_done != null ? status.percent_done.toFixed(3) + '%' : '…';
+    const mins = Math.floor((status.uptime_s || 0) / 60);
+    txt = `🛰 ${t('masscanRunning')} — ${pct} ${t('found')} ${status.found ?? 0} (${mins} min) — ${cfg.target} :${cfg.ports} @ ${cfg.rate}pps`;
+  } else {
+    txt = `⏹ ${t('masscanStopped')}` + (status.resume_point_saved ? ' (resume point saved)' : '') + ` — ${cfg.target} :${cfg.ports} @ ${cfg.rate}pps`;
+  }
+  if (status.last_error) txt += ` — ${t('masscanError')}: ${status.last_error}`;
+  el.innerText = txt;
+}
+
+async function loadMasscanSettings() {
+  const [cfg, status] = await Promise.all([
+    (await fetch('/api/settings/masscan')).json(),
+    (await fetch('/api/masscan/status')).json()
+  ]);
+  document.getElementById('masscanTargetInput').value = cfg.target || '0.0.0.0/0';
+  document.getElementById('masscanRateInput').value = cfg.rate || 2000;
+  document.getElementById('masscanPortsInput').value = cfg.ports || '11434';
+  renderMasscanStatus(status);
+}
+
+async function saveMasscanConfig() {
+  const body = {
+    target: document.getElementById('masscanTargetInput').value.trim(),
+    rate: parseInt(document.getElementById('masscanRateInput').value, 10),
+    ports: document.getElementById('masscanPortsInput').value.trim()
+  };
+  const res = await (await fetch('/api/settings/masscan', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  })).json();
+  document.getElementById('masscanLog').innerText = (LANG === 'fa' ? '✅ ذخیره شد' : '✅ Saved') + ' — ' + (res.target || '') + ' :' + (res.ports || '') + ' @ ' + (res.rate || '') + 'pps';
+  loadMasscanSettings();
+}
+
+async function startMasscan() {
+  const res = await (await fetch('/api/masscan/start', { method: 'POST' })).json();
+  document.getElementById('masscanLog').innerText = (res.ok ? '✅ ' : '❌ ') + res.message;
+  loadMasscanSettings();
+}
+
+async function stopMasscan() {
+  const res = await (await fetch('/api/masscan/stop', { method: 'POST' })).json();
+  document.getElementById('masscanLog').innerText = (res.ok ? '✅ ' : 'ℹ️ ') + res.message;
+  loadMasscanSettings();
 }
 
 async function loadScannerKeys() {

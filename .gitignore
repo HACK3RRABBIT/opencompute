@@ -17,3 +17,10 @@ venv/
 
 # OS
 .DS_Store
+
+# Masscan runtime artifacts (machine-local, regenerated)
+masscan.log
+masscan_results.jsonl
+masscan_excludes.txt
+paused.conf
+server.log

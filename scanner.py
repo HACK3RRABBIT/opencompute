@@ -13,6 +13,7 @@ Validation chain per candidate (~2-5KB total):
   3. Real generation test on first model -> proves it actually answers
 """
 import sqlite3, socket, json, re, threading, time, os, random, string
+import subprocess, signal, struct
 import concurrent.futures as cf
 import requests
 
@@ -35,15 +36,16 @@ def is_paid_model(name: str) -> bool:
 # ── SETTINGS (persisted, toggle which discovery sources run) ───────
 
 DEFAULT_SOURCES = {
-    "crtsh": True,
-    "certspotter": True,
-    "hackertarget": True,
-    "shodan_web": True,
-    "shodan_api": True,
-    "leakix": True,
-    "censys": True,
-    "port_sweep": True,
-    "manual_seed": True,
+    "masscan": True,        # raw-socket internet-wide port scan (the primary source)
+    "port_sweep": True,     # TCP-connect sweep of extra LLM ports on masscan-found IPs
+    "manual_seed": True,    # user's known-good seed list (round 1 only)
+    "crtsh": False,
+    "certspotter": False,
+    "hackertarget": False,
+    "shodan_web": False,
+    "shodan_api": False,
+    "leakix": False,
+    "censys": False,
 }
 
 def get_setting(key, default=None):
@@ -182,6 +184,237 @@ def test_api_key(source: str, **kwargs):
 _stop_flag = threading.Event()
 _scan_state = {"running": False, "phase": "", "found": 0, "verified": 0, "checked": 0, "total": 0}
 
+# ── MASSCAN (raw-socket internet-wide port scan) ─────────────────────
+# masscan needs root / CAP_NET_RAW. The binary is setcap'd (cap_net_raw+ep)
+# so it runs without sudo. It writes one JSON object per line to
+# masscan_results.jsonl as it finds open ports, and prints a progress line
+# to stderr (captured in masscan.log). A full 0.0.0.0/0 sweep is long
+# (days-to-weeks at a polite rate), so the process is long-lived and
+# resumable: SIGINT makes masscan write paused.conf with its position, and
+# start_masscan() resumes from it when present.
+#
+# Bandwidth is tiny: at `rate` pps it's ~rate * 54 bytes/s ≈ 0.5 Mbps at
+# 2000 pps — the heavy part of the pipeline is the HTTP validation of the
+# few nodes that actually answer, which the rest of the code already caps.
+
+MASS_RESULTS = "masscan_results.jsonl"
+MASS_PAUSED = "paused.conf"
+MASS_LOG = "masscan.log"
+MASS_EXCLUDES = "masscan_excludes.txt"
+
+# Reserved/multicast/self ranges only. Private space (10/8, 172.16/12,
+# 192.168/16, 100.64/10) is intentionally LEFT IN so the sweep also finds
+# local/peer Ollama nodes; edit `masscan_excludes` in settings to change.
+DEFAULT_MASSCAN_EXCLUDES = """0.0.0.0/8
+127.0.0.0/8
+169.254.0.0/16
+192.0.0.0/24
+192.0.2.0/24
+198.18.0.0/15
+198.51.100.0/24
+203.0.113.0/24
+224.0.0.0/4
+240.0.0.0/4
+255.255.255.255/32
+"""
+
+_masscan_lock = threading.Lock()
+_masscan_proc = None
+_masscan_started_at = None
+_masscan_last_error = None
+
+def get_masscan_config():
+    return {
+        "target": get_setting("masscan_target", "0.0.0.0/0"),
+        "rate": int(get_setting("masscan_rate", "2000")),
+        "ports": get_setting("masscan_ports", "11434"),
+        "excludes": get_setting("masscan_excludes", DEFAULT_MASSCAN_EXCLUDES),
+    }
+
+def set_masscan_config(target=None, rate=None, ports=None, excludes=None):
+    if target is not None and str(target).strip():
+        set_setting("masscan_target", str(target).strip())
+    if rate is not None:
+        set_setting("masscan_rate", str(max(100, int(rate))))
+    if ports is not None and str(ports).strip():
+        set_setting("masscan_ports", str(ports).strip())
+    if excludes is not None:
+        set_setting("masscan_excludes", str(excludes))
+    return get_masscan_config()
+
+def _write_excludes_file(cfg):
+    txt = cfg["excludes"]
+    if not txt.endswith("\n"):
+        txt += "\n"
+    with open(MASS_EXCLUDES, "w") as f:
+        f.write(txt)
+
+def _get_router_info():
+    """Best-effort detection of (interface, gateway_ip, gateway_mac) from the
+    routing/ARP tables — needed because masscan cannot read netlink routes
+    itself when running with just cap_net_raw/cap_net_admin (not full root).
+    Returns (None, None, None) when undetectable (then masscan is invoked
+    without explicit router args, which works when running as real root)."""
+    iface = gw = mac = None
+    try:
+        with open("/proc/net/route") as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 4 and parts[1] == "00000000" and parts[3] != "00000000":
+                    iface = parts[0]
+                    gw_int = int(parts[2], 16)
+                    gw = socket.inet_ntoa(struct.pack("<I", gw_int))
+                    break
+    except Exception:
+        pass
+    if gw:
+        try:
+            out = subprocess.run(["ip", "neigh", "show", gw],
+                                 capture_output=True, text=True, timeout=5)
+            m = re.search(r"lladdr\s+([0-9a-f:]+)", out.stdout)
+            if m:
+                mac = m.group(1).replace(":", "-")
+        except Exception:
+            pass
+    return iface, gw, mac
+
+def _masscan_cmd(cfg, resume=False):
+    if resume and os.path.exists(MASS_PAUSED):
+        return ["masscan", "--resume", MASS_PAUSED, "-oJ", MASS_RESULTS, "--wait", "5"]
+    cmd = ["masscan", cfg["target"], "-p" + cfg["ports"], "--rate", str(cfg["rate"]),
+           "--excludefile", MASS_EXCLUDES, "-oJ", MASS_RESULTS, "--wait", "5",
+           "--interactive"]
+    iface, gw, mac = _get_router_info()
+    if iface:
+        cmd += ["--interface", iface]
+    if gw:
+        cmd += ["--router", gw]
+    if mac:
+        cmd += ["--router-mac", mac]
+    return cmd
+
+def is_masscan_running():
+    with _masscan_lock:
+        return bool(_masscan_proc and _masscan_proc.poll() is None)
+
+def start_masscan():
+    """Start (or resume) the long-lived masscan sweep. Safe to call every scan
+    round — no-op when already running. Requires the binary to be setcap'd:
+    `sudo setcap cap_net_raw+ep $(which masscan)`."""
+    global _masscan_proc, _masscan_started_at, _masscan_last_error
+    with _masscan_lock:
+        if _masscan_proc and _masscan_proc.poll() is None:
+            return {"ok": True, "message": "already running", "pid": _masscan_proc.pid}
+        cfg = get_masscan_config()
+        _write_excludes_file(cfg)
+        resume = os.path.exists(MASS_PAUSED)
+        cmd = _masscan_cmd(cfg, resume=resume)
+        try:
+            with open(MASS_LOG, "a") as logf:
+                _masscan_proc = subprocess.Popen(
+                    cmd, stdout=logf, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, cwd=os.path.dirname(os.path.abspath(__file__)))
+            _masscan_started_at = time.time()
+            _masscan_last_error = None
+            return {"ok": True, "message": "resumed from paused.conf" if resume else "started",
+                    "pid": _masscan_proc.pid, "cmd": " ".join(cmd)}
+        except FileNotFoundError:
+            _masscan_last_error = "masscan binary not found — install it (apt install masscan)"
+            return {"ok": False, "message": _masscan_last_error}
+        except PermissionError:
+            _masscan_last_error = ("masscan needs CAP_NET_RAW + CAP_NET_ADMIN — run once: "
+                                   "sudo setcap cap_net_raw,cap_net_admin+ep $(which masscan)")
+            return {"ok": False, "message": _masscan_last_error}
+        except Exception as e:
+            _masscan_last_error = str(e)
+            return {"ok": False, "message": str(e)}
+
+def stop_masscan():
+    """SIGINT the sweep — masscan saves its position to paused.conf so the
+    next start_masscan() resumes where it left off instead of restarting."""
+    global _masscan_proc
+    with _masscan_lock:
+        if not (_masscan_proc and _masscan_proc.poll() is None):
+            return {"ok": False, "message": "not running"}
+        try:
+            _masscan_proc.send_signal(signal.SIGINT)
+            _masscan_proc.wait(timeout=20)
+        except Exception:
+            try:
+                _masscan_proc.kill()
+            except Exception:
+                pass
+        _masscan_proc = None
+        return {"ok": True, "message": "stopped — resume point saved to paused.conf"}
+
+def _parse_masscan_log():
+    """Last progress line from masscan.log, e.g.
+    'rate: 1,994.00-kpps, 0.01% done, 20:13:45 remaining, found=  12'
+    Returns (percent_done, found_count)."""
+    try:
+        with open(MASS_LOG) as f:
+            raw = f.read()
+    except Exception:
+        return None, None
+    for line in reversed(re.split(r"[\r\n]+", raw)):
+        if not line.strip():
+            continue
+        m = re.search(r"([\d.]+)%\s+done.*?remaining.*?found=\s*(\d+)", line)
+        if m:
+            return float(m.group(1)), int(m.group(2))
+        m2 = re.search(r"found=\s*(\d+)", line)
+        if m2:
+            return None, int(m2.group(1))
+    return None, None
+
+def masscan_status():
+    with _masscan_lock:
+        running = bool(_masscan_proc and _masscan_proc.poll() is None)
+        pid = _masscan_proc.pid if _masscan_proc else None
+    pct, found = _parse_masscan_log()
+    uptime = int(time.time() - _masscan_started_at) if _masscan_started_at else 0
+    return {"running": running, "pid": pid, "uptime_s": uptime,
+            "percent_done": pct, "found": found,
+            "last_error": _masscan_last_error,
+            "config": get_masscan_config(),
+            "resume_point_saved": os.path.exists(MASS_PAUSED)}
+
+def discover_masscan():
+    """Harvest (ip, port) findings masscan has written to the JSONL output.
+    Handles one-record-per-line, pretty-printed multi-line records, and the
+    top-level JSON array form (masscan 1.3.x -oJ emits a single array)."""
+    out = set()
+    try:
+        with open(MASS_RESULTS) as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return []
+    dec = json.JSONDecoder()
+    idx, n = 0, len(raw)
+    while idx < n:
+        while idx < n and raw[idx] not in "{[":
+            idx += 1
+        if idx >= n:
+            break
+        try:
+            obj, end = dec.raw_decode(raw, idx)
+        except ValueError:
+            idx += 1
+            continue
+        records = obj if isinstance(obj, list) else [obj]
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            ip = rec.get("ip")
+            for p in rec.get("ports", []):
+                if p.get("status") == "open" and ip:
+                    try:
+                        out.add((ip, int(p["port"])))
+                    except (TypeError, ValueError):
+                        continue
+        idx = end
+    return sorted(out)
+
 def db():
     conn = sqlite3.connect(DB, timeout=15)
     conn.row_factory = sqlite3.Row
@@ -202,6 +435,7 @@ def init_db():
             id TEXT PRIMARY KEY, node_id TEXT NOT NULL, model_name TEXT NOT NULL,
             working INTEGER DEFAULT 0, last_tested DATETIME,
             param_size_b REAL DEFAULT 0, is_big INTEGER DEFAULT 0,
+            fail_reason TEXT, last_error TEXT,
             FOREIGN KEY(node_id) REFERENCES nodes(id), UNIQUE(node_id, model_name))""")
         c.execute("""CREATE TABLE IF NOT EXISTS scan_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -224,6 +458,11 @@ def init_db():
             c.execute("ALTER TABLE nodes ADD COLUMN archived INTEGER DEFAULT 0")
         if "archive_reason" not in node_cols:
             c.execute("ALTER TABLE nodes ADD COLUMN archive_reason TEXT")
+        model_cols = {row[1] for row in c.execute("PRAGMA table_info(models)")}
+        if "fail_reason" not in model_cols:
+            c.execute("ALTER TABLE models ADD COLUMN fail_reason TEXT")
+        if "last_error" not in model_cols:
+            c.execute("ALTER TABLE models ADD COLUMN last_error TEXT")
 
 # Big/powerful open-weight model families worth prioritizing (name-based hint,
 # used together with parsed parameter-count when the API reports it).
@@ -603,13 +842,45 @@ def real_test(host, port, scheme, model, api_style):
     templated honeypot reply won't contain the random token we asked for, and
     an echo-bot parroting our prompt back gets caught separately).
     Handles servers that ignore stream:false and return NDJSON chunks.
-    Returns (ok: bool, response_text: str, fingerprint: str|None). fingerprint
-    is the backend's self-reported system_fingerprint/model server id, used to
-    catch honeypot farms that reuse the same backend signature across many IPs."""
+    Returns (ok: bool, response_text: str, fingerprint: str|None, fail_reason: str|None).
+    fail_reason (only set when ok=False) distinguishes:
+      - 'temp_unavailable': the backend is a real Ollama/vLLM server that returned
+        a genuine error (out of memory, model failed to load, etc) — likely to
+        recover later, worth auto-retrying.
+      - 'no_response' / 'unreachable': connection/timeout/empty-body failure —
+        also likely transient.
+      - 'prompt_echo': response contains a long verbatim chunk of our prompt —
+        strong echo-bot signal.
+      - 'instruction_not_followed': got real-looking text back but it never
+        contained our challenge token — either a canned/templated honeypot
+        reply, or (less likely) a genuinely too-weak model.
+    fingerprint is the backend's self-reported system_fingerprint/model server
+    id, used to catch honeypot farms that reuse the same signature across IPs."""
     token, prompt = _make_challenge()
 
-    def _judge(content):
-        return _response_honors_challenge(content, token) and not _looks_like_prompt_echo(prompt, content)
+    # Real Ollama/vLLM error messages we've observed in the wild for otherwise-
+    # legitimate nodes: OOM, model still loading, runner crashed, etc. If the
+    # response body matches one of these, the node is probably real but just
+    # temporarily can't serve this specific model.
+    TEMP_ERROR_PATTERNS = re.compile(
+        r"(out of memory|cudamalloc failed|more system memory|"
+        r"model.*(loading|not found|does not exist)|"
+        r"runner process has terminated|error loading model|"
+        r"context deadline exceeded|connection refused|"
+        r"server is busy|no available (worker|slot))", re.I)
+
+    def _classify(content, status_code=None, http_error=False):
+        if http_error:
+            return None, "unreachable"
+        if not content:
+            return None, "no_response"
+        if TEMP_ERROR_PATTERNS.search(content):
+            return None, "temp_unavailable"
+        if _looks_like_prompt_echo(prompt, content):
+            return None, "prompt_echo"
+        if not _response_honors_challenge(content, token):
+            return None, "instruction_not_followed"
+        return True, None
 
     try:
         if api_style == "/v1/models":
@@ -620,22 +891,33 @@ def real_test(host, port, scheme, model, api_style):
             if r.status_code == 200:
                 text = r.text.strip()
                 if not text:
-                    return False, "", None
+                    return False, "", None, "no_response"
                 if "chatcmpl-fake" in text:
-                    return False, "", None
+                    return False, "", None, "instruction_not_followed"
                 try:
                     d = r.json()
+                    if isinstance(d, dict) and d.get("error"):
+                        err_text = str(d["error"])
+                        ok, reason = _classify(err_text)
+                        return False, err_text, None, (reason or "temp_unavailable")
                     choices = d.get("choices", [])
                     content = (choices[0].get("message", {}).get("content") or choices[0].get("text") or "") if choices else ""
                     fp = d.get("system_fingerprint")
-                    return _judge(content), content, fp
+                    ok, reason = _classify(content)
+                    return bool(ok), content, fp, reason
                 except Exception:
                     # NDJSON stream despite stream:false — check first line has real content
-                    first = text.splitlines()[0]
-                    d = json.loads(first)
+                    try:
+                        first = text.splitlines()[0]
+                        d = json.loads(first)
+                    except Exception:
+                        return False, text[:300], None, "no_response"
                     choices = d.get("choices", [])
                     content = (choices[0].get("message", {}).get("content") or choices[0].get("text") or "") if choices else ""
-                    return _judge(content), content, d.get("system_fingerprint")
+                    ok, reason = _classify(content)
+                    return bool(ok), content, d.get("system_fingerprint"), reason
+            else:
+                return False, f"HTTP {r.status_code}", None, "unreachable"
         else:
             r = requests.post(f"{scheme}://{host}:{port}/api/generate",
                 json={"model": model, "prompt": prompt, "stream": False,
@@ -644,11 +926,16 @@ def real_test(host, port, scheme, model, api_style):
             if r.status_code == 200:
                 text = r.text.strip()
                 if not text:
-                    return False, "", None
+                    return False, "", None, "no_response"
                 try:
                     d = r.json()
+                    if isinstance(d, dict) and d.get("error"):
+                        err_text = str(d["error"])
+                        ok, reason = _classify(err_text)
+                        return False, err_text, None, (reason or "temp_unavailable")
                     resp = d.get("response", "")
-                    return _judge(resp), resp, None
+                    ok, reason = _classify(resp)
+                    return bool(ok), resp, None, reason
                 except Exception:
                     # NDJSON stream despite stream:false — concat chunks
                     parts = []
@@ -660,10 +947,16 @@ def real_test(host, port, scheme, model, api_style):
                         if d.get("response") is not None:
                             parts.append(d["response"])
                     full = "".join(parts)
-                    return _judge(full), full, None
+                    if not full:
+                        return False, "", None, "no_response"
+                    ok, reason = _classify(full)
+                    return bool(ok), full, None, reason
+            else:
+                return False, f"HTTP {r.status_code}", None, "unreachable"
+    except requests.exceptions.Timeout:
+        return False, "", None, "unreachable"
     except Exception:
-        pass
-    return False, "", None
+        return False, "", None, "unreachable"
 
 def check_fingerprint_reuse(fingerprint: str, host: str, model: str, max_distinct_hosts=2) -> bool:
     """Returns True if this fingerprint has already been seen on a *different*
@@ -809,27 +1102,32 @@ def validate_candidate(host, port, source, scheme_hint=None):
             ordered = sorted(names, key=lambda n: (
                 0 if is_big_model(n, sizes.get(n, 0)) else 1, -sizes.get(n, 0)))
             working = []
+            fail_info = {}  # model_name -> (fail_reason, last_error)
             credit_hits = 0
             farm_hits = 0
             tested = 0
             for m in ordered[:6]:  # test up to 6 models per node to limit bandwidth
-                ok, text, fingerprint = real_test(host, port, scheme, m, api_style)
+                ok, text, fingerprint, reason = real_test(host, port, scheme, m, api_style)
                 if not ok:
+                    fail_info[m] = (reason or "unreachable", text[:300] if text else None)
                     continue
                 tested += 1
                 if is_credit_required_response(text):
                     credit_hits += 1
+                    fail_info[m] = ("credit_required", text[:300])
                     continue
                 # Layer 1: fast regex/heuristic check on the actual generated text —
                 # catches HTTP-200-but-fake answers (canned refusals, placeholder
                 # text, degenerate repeated tokens, etc).
                 if looks_like_fake_response(text):
+                    fail_info[m] = ("instruction_not_followed", text[:300])
                     continue
                 # Layer 2: if the backend's own system_fingerprint / server id has
                 # already been seen on other unrelated IPs claiming the same model,
                 # this is a honeypot farm reusing a shared backend — reject it.
                 if fingerprint and check_fingerprint_reuse(fingerprint, host, m):
                     farm_hits += 1
+                    fail_info[m] = ("honeypot_farm_fingerprint_reuse", text[:300])
                     continue
                 # Layer 3: if we have a confirmed-real judge model available, ask it
                 # to sanity-check ambiguous-but-heuristic-passed text too. This is
@@ -837,6 +1135,7 @@ def validate_candidate(host, port, source, scheme_hint=None):
                 # the heuristic result alone rather than blocking everything.
                 verdict = judge_is_real_response(text)
                 if verdict is False:
+                    fail_info[m] = ("instruction_not_followed", text[:300])
                     continue
                 working.append(m)
                 # first genuinely-confirmed model on this scan becomes available as
@@ -855,7 +1154,8 @@ def validate_candidate(host, port, source, scheme_hint=None):
                     "status": status, "models": names, "working_models": working,
                     "sizes": sizes, "latency_ms": latency,
                     "archived": archived,
-                    "archive_reason": archive_reason}
+                    "archive_reason": archive_reason,
+                    "fail_info": fail_info}
     return None
 
 def store_result(r, added_by="scanner"):
@@ -869,16 +1169,21 @@ def store_result(r, added_by="scanner"):
             (nid, r["host"], r["port"], r["scheme"], r["source"], r["status"],
              len(r.get("working_models", [])), r["latency_ms"], added_by, archived, archive_reason))
         sizes = r.get("sizes", {})
+        fail_info = r.get("fail_info", {})
         for m in r["models"]:
             working = 1 if m in r.get("working_models", []) else 0
             size_b = sizes.get(m, 0) or 0
             big = 1 if is_big_model(m, size_b) else 0
-            c.execute("""INSERT INTO models (id, node_id, model_name, working, last_tested, param_size_b, is_big)
-                         VALUES (?,?,?,?,CURRENT_TIMESTAMP,?,?)
+            fail_reason, last_error = fail_info.get(m, (None, None))
+            if working:
+                fail_reason, last_error = None, None
+            c.execute("""INSERT INTO models (id, node_id, model_name, working, last_tested, param_size_b, is_big, fail_reason, last_error)
+                         VALUES (?,?,?,?,CURRENT_TIMESTAMP,?,?,?,?)
                          ON CONFLICT(node_id, model_name)
                          DO UPDATE SET working=excluded.working, last_tested=CURRENT_TIMESTAMP,
-                                       param_size_b=excluded.param_size_b, is_big=excluded.is_big""",
-                      (f"{nid}:{m}", nid, m, working, size_b, big))
+                                       param_size_b=excluded.param_size_b, is_big=excluded.is_big,
+                                       fail_reason=excluded.fail_reason, last_error=excluded.last_error""",
+                      (f"{nid}:{m}", nid, m, working, size_b, big, fail_reason, last_error))
 
 def get_state():
     return dict(_scan_state)
@@ -973,6 +1278,75 @@ def add_manual(host_or_url, port=None):
                 "working_models": res.get("working_models", [])}
     return {"ok": False, "error": "not reachable or no models found"}
 
+def retest_model(node_id: str, model_name: str):
+    """Manually re-run the real-generation challenge for one specific
+    (node, model) pair — e.g. after a 'temp_unavailable' failure (OOM, model
+    still loading, GPU busy) where the node might have recovered since."""
+    with db() as c:
+        node = c.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    if not node:
+        return {"ok": False, "error": "node not found"}
+    scheme = node["scheme"] or ("https" if node["port"] == 443 else "http")
+    names, api_style, _sizes = probe_models(node["host"], node["port"], scheme)
+    if model_name not in names:
+        api_style = "/v1/models"  # best-effort guess if the node no longer lists it
+    ok, text, fingerprint, reason = real_test(node["host"], node["port"], scheme, model_name, api_style)
+    working = False
+    fail_reason, last_error = None, None
+    if ok:
+        if is_credit_required_response(text):
+            fail_reason, last_error = "credit_required", text[:300]
+        elif looks_like_fake_response(text):
+            fail_reason, last_error = "instruction_not_followed", text[:300]
+        elif fingerprint and check_fingerprint_reuse(fingerprint, node["host"], model_name):
+            fail_reason, last_error = "honeypot_farm_fingerprint_reuse", text[:300]
+        elif judge_is_real_response(text) is False:
+            fail_reason, last_error = "instruction_not_followed", text[:300]
+        else:
+            working = True
+    else:
+        fail_reason, last_error = (reason or "unreachable"), (text[:300] if text else None)
+
+    with db() as c:
+        mid = f"{node_id}:{model_name}"
+        c.execute("""INSERT INTO models (id, node_id, model_name, working, last_tested, fail_reason, last_error)
+                     VALUES (?,?,?,?,CURRENT_TIMESTAMP,?,?)
+                     ON CONFLICT(node_id, model_name)
+                     DO UPDATE SET working=excluded.working, last_tested=CURRENT_TIMESTAMP,
+                                   fail_reason=excluded.fail_reason, last_error=excluded.last_error""",
+                  (mid, node_id, model_name, 1 if working else 0, fail_reason, last_error))
+        if working:
+            c.execute("UPDATE nodes SET status='verified', archived=0, archive_reason=NULL WHERE id=?", (node_id,))
+    return {"ok": True, "working": working, "fail_reason": fail_reason, "response_preview": text[:200] if text else None}
+
+def retest_failed_models(reasons=("temp_unavailable", "no_response", "unreachable"), max_workers=15, limit=200):
+    """Bulk-retest every currently-not-working model whose last failure looks
+    transient (OOM / node briefly down / timeout) rather than confirmed-fake.
+    Intended to be called periodically (or manually from the dashboard) to
+    pick back up nodes that recovered since their last failed check."""
+    placeholders = ",".join("?" for _ in reasons)
+    with db() as c:
+        rows = c.execute(f"""
+            SELECT node_id, model_name FROM models
+            WHERE working = 0 AND fail_reason IN ({placeholders})
+            ORDER BY last_tested ASC LIMIT ?
+        """, (*reasons, limit)).fetchall()
+    pairs = [(r["node_id"], r["model_name"]) for r in rows]
+    results = {"checked": 0, "recovered": 0}
+    if not pairs:
+        return results
+    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = [ex.submit(retest_model, nid, mname) for nid, mname in pairs]
+        for f in cf.as_completed(futs):
+            try:
+                res = f.result()
+                results["checked"] += 1
+                if res.get("working"):
+                    results["recovered"] += 1
+            except Exception:
+                pass
+    return results
+
 def build_candidates(include_manual_seed=True):
     cands = {}
     enabled = get_enabled_sources()
@@ -1039,6 +1413,28 @@ def build_candidates(include_manual_seed=True):
         _scan_state["phase"] = "censys"
         for host, port in discover_censys():
             cands.setdefault((host, port), ("censys", None))
+
+    # ── masscan: raw-socket internet-wide sweep (primary source) ────
+    # The long-lived masscan process runs continuously in the background
+    # (resumable via paused.conf); each scan round just harvests whatever
+    # new open ports it has written since the last round. Also re-includes
+    # every known node from the DB so they keep getting re-validated each
+    # round (in masscan-only mode nothing else re-discovers them, and stale
+    # "working" flags would otherwise drift from live reality).
+    if enabled.get("masscan", True):
+        _scan_state["phase"] = "masscan"
+        try:
+            start_masscan()  # no-op when already running; resumes if paused
+            for ip, port in discover_masscan():
+                cands.setdefault((ip, port), ("masscan", None))
+            with db() as c:
+                known = c.execute(
+                    "SELECT host, port, source, scheme FROM nodes WHERE archived = 0").fetchall()
+            for r in known:
+                cands.setdefault((r["host"], r["port"]),
+                                 (r["source"] or "masscan", r["scheme"]))
+        except Exception as e:
+            print(f"[build_candidates] masscan error: {e}")
 
     # ── Full port sweep on every distinct IP we've gathered ──────────
     # TCP-connect only, near-zero bandwidth, catches nodes running on a
@@ -1131,6 +1527,10 @@ def start_continuous(interval_seconds=180):
 def stop_continuous():
     _continuous_running.clear()
     stop_scan()
+    try:
+        stop_masscan()  # pause the sweep too — resume point saved
+    except Exception as e:
+        print(f"[stop_continuous] masscan stop error: {e}")
 
 def is_continuous_running():
     return bool(_continuous_thread and _continuous_thread.is_alive())
