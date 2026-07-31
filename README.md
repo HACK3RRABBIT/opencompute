@@ -64,10 +64,75 @@ Dashboard: http://localhost:5555
 Default API key: `sk-1234` (change it from the Settings tab, or via the
 `OPENCOMPUTE_API_KEY` env var before first run)
 
+## VPS deployment (masscan-only mode)
+
+Runs comfortably on a 1 vCPU / 1GB RAM VPS — real measured footprint on
+Ubuntu 24.04 is ~60MB (API server) + ~40MB (masscan), well under the box's
+budget. What matters more than specs is unmetered/generous bandwidth and a
+provider that tolerates outbound port scanning (Hetzner, OVH, Contabo — not
+AWS/GCP/Azure, which will flag/suspend accounts for scanning).
+
+```bash
+# 1. System deps
+apt-get install -y python3-venv python3-pip masscan git ufw
+
+# 2. Clone + venv
+git clone https://github.com/HACK3RRABBIT/opencompute.git /root/opencompute
+cd /root/opencompute
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+# 3. masscan needs raw sockets — setcap avoids running the whole service as root
+setcap cap_net_raw,cap_net_admin+ep $(which masscan)
+
+# 4. Firewall — only SSH + the dashboard port
+ufw allow 22/tcp
+ufw allow 8081/tcp
+ufw --force enable
+
+# 5. Masscan-only mode: disable every other discovery source
+python3 -c "import scanner; scanner.init_db(); scanner.set_enabled_sources({'port_sweep': False, 'manual_seed': False})"
+```
+
+Run as a systemd service so it survives reboots/disconnects and auto-restarts:
+
+```ini
+# /etc/systemd/system/opencompute.service
+[Unit]
+Description=OpenCompute - Ollama node aggregator (masscan discovery)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/opencompute
+Environment=OPENCOMPUTE_API_KEY=sk-1234
+ExecStart=/root/opencompute/venv/bin/python3 -m uvicorn server:app --host 0.0.0.0 --port 8081
+Restart=always
+RestartSec=5
+MemoryMax=800M
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload && systemctl enable --now opencompute
+curl -X POST http://localhost:8081/api/settings/masscan -H 'Content-Type: application/json' \
+     -d '{"target":"0.0.0.0/0","rate":2000,"ports":"11434"}'
+curl -X POST http://localhost:8081/api/masscan/start
+curl -X POST http://localhost:8081/api/scan/continuous/start
+```
+
+At 2000 pps a full `0.0.0.0/0` sweep of one port takes ~3 weeks; bump `rate`
+(e.g. 10000) for faster coverage if your provider/bandwidth allows it. Stopping
+the sweep (`/api/masscan/stop`) saves a resume point (`paused.conf`) so the next
+start continues instead of restarting from scratch.
+
 ## Using the API
 
 ```bash
-curl http://localhost:5555/v1/models -H "Authorization: Bearer sk-1234"
+curl http://localhost:5555/v1/models -H "Authorization: Bearer ***"
 
 curl -X POST http://localhost:5555/v1/chat/completions \
   -H "Authorization: Bearer sk-1234" \
