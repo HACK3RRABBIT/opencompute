@@ -260,9 +260,12 @@
     <div class="tab-page" id="tab-models">
       <div class="panel">
         <div class="panel-head">
-          <span><span data-i18n="modelsTitle">Tested Models</span> <span id="modelCount" style="color:var(--muted-foreground)"></span></span>
+          <span><span data-i18n="modelsTitle">Working Models</span> <span id="modelCount" style="color:var(--muted-foreground)"></span></span>
           <span class="controls">
             <select id="modelSourceFilter" onchange="renderModels()"></select>
+            <label style="font-size:11px;color:var(--muted-foreground);display:flex;align-items:center;gap:4px">
+              <input type="checkbox" id="showAllModels" onchange="loadModels()"> <span data-i18n="showAllModels">Show untested/dead too</span>
+            </label>
             <a href="/models" target="_blank" style="font-size:11px;color:var(--primary)" data-i18n="viewPlain">View plain in browser</a>
           </span>
         </div>
@@ -271,9 +274,8 @@
             <thead><tr>
               <th class="sortable" onclick="setSort('models','model_name')" data-i18n="colModel">Model</th>
               <th class="sortable" onclick="setSort('models','param_size_b')" data-i18n="colSize">Size</th>
-              <th class="sortable" onclick="setSort('models','host')" data-i18n="colNode">Node</th>
-              <th data-i18n="colSourceCol">Source</th>
-              <th class="sortable" onclick="setSort('models','working')" data-i18n="colRealStatus">Real Status</th>
+              <th class="sortable" onclick="setSort('models','node_count')" data-i18n="colNodeCount"># Nodes</th>
+              <th data-i18n="colSourceCol">Discovered via</th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -376,7 +378,7 @@ const I18N = {
     manualPlaceholder: "آی‌پی / دامنه / آدرس کامل — مثل http://1.2.3.4:11434", addManual: "اضافه دستی",
     nodesTitle: "نودها", colAddress: "آدرس:پورت", colStatus: "وضعیت", colModels: "مدل‌ها",
     colLatency: "تأخیر", colSource: "منبع", colSize: "اندازه", colSourceCol: "منبع",
-    modelsTitle: "مدل‌های تست‌شده", colModel: "مدل", colNode: "نود", colRealStatus: "وضعیت واقعی",
+    modelsTitle: "مدل‌های کارکننده", colModel: "مدل", colNode: "نود", colRealStatus: "وضعیت واقعی", colNodeCount: "تعداد نود", showAllModels: "نمایش تست‌نشده/مرده هم",
     statTotalNodes: "کل نودها", statVerified: "تأیید شده (تست واقعی)", statWorkingModels: "مدل کار می‌کند",
     statTotalModels: "کل مدل‌ها دیده شده", statBigModels: "مدل‌های بزرگ و قدرتمند", statArchived: "آرشیو شده (نیاز به کردیت)",
     noNodes: "هنوز نودی پیدا نشده — اسکن رو شروع کن",
@@ -407,7 +409,7 @@ const I18N = {
     manualPlaceholder: "IP / domain / full URL — e.g. http://1.2.3.4:11434", addManual: "Add Manually",
     nodesTitle: "Nodes", colAddress: "Host:Port", colStatus: "Status", colModels: "Models",
     colLatency: "Latency", colSource: "Source", colSize: "Size", colSourceCol: "Source",
-    modelsTitle: "Tested Models", colModel: "Model", colNode: "Node", colRealStatus: "Real Status",
+    modelsTitle: "Working Models", colModel: "Model", colNode: "Node", colRealStatus: "Real Status", colNodeCount: "# Nodes", showAllModels: "Show untested/dead too",
     statTotalNodes: "Total Nodes", statVerified: "Verified (real test)", statWorkingModels: "Working Models",
     statTotalModels: "Total Models Seen", statBigModels: "Big/Powerful Models", statArchived: "Archived (needs credit)",
     noNodes: "No nodes found yet — start a scan",
@@ -597,14 +599,15 @@ function renderNodes() {
 }
 
 async function loadModels() {
-  LAST_MODELS = await (await fetch('/api/models')).json();
+  const workingOnly = !document.getElementById('showAllModels').checked;
+  LAST_MODELS = await (await fetch('/api/models?working_only=' + workingOnly)).json();
   document.getElementById('modelCount').innerText = '(' + LAST_MODELS.length + ')';
   renderModels();
 }
 
 function renderModels() {
   const srcFilter = document.getElementById('modelSourceFilter').value;
-  let rows = LAST_MODELS.filter(m => !srcFilter || sourceBase(m.source) === srcFilter);
+  let rows = LAST_MODELS.filter(m => !srcFilter || (m.sources || '').split(',').map(sourceBase).includes(srcFilter));
   const { key, dir } = SORT_STATE.models;
   rows = rows.slice().sort((a, b) => {
     let av = a[key], bv = b[key];
@@ -613,14 +616,17 @@ function renderModels() {
     if (typeof av === 'string') return av.localeCompare(bv) * dir;
     return (av - bv) * dir;
   });
-  document.querySelector('#modelsTable tbody').innerHTML = rows.length ? rows.map(m => `
+  document.querySelector('#modelsTable tbody').innerHTML = rows.length ? rows.map(m => {
+    const sources = (m.sources || '').split(',').filter(Boolean).map(sourceBase);
+    const uniqueSources = [...new Set(sources)];
+    return `
     <tr>
       <td>${m.is_big ? '💪 ' : ''}${m.model_name}</td>
       <td>${m.param_size_b ? m.param_size_b + 'B' : '-'}${m.is_big ? ' <span class="badge verified">' + t('big') + '</span>' : ''}</td>
-      <td style="color:var(--muted-foreground)">${m.scheme}://${m.host}:${m.port}</td>
-      <td style="color:var(--muted-foreground)">${sourceLabel(sourceBase(m.source))}</td>
-      <td>${m.working ? badge('verified') : badge('dead')}</td>
-    </tr>`).join('') : `<tr class="empty-row"><td colspan="5">${t('noModels')}</td></tr>`;
+      <td><span class="badge verified">${m.node_count}</span></td>
+      <td style="color:var(--muted-foreground)">${uniqueSources.map(sourceLabel).join(', ')}</td>
+    </tr>`;
+  }).join('') : `<tr class="empty-row"><td colspan="4">${t('noModels')}</td></tr>`;
 }
 
 async function startScan() {

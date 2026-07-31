@@ -261,29 +261,42 @@ def is_big_model(model_name: str, param_size_b: float) -> bool:
 # ── DISCOVERY (passive / free, minimal bandwidth) ──────────────────
 
 def discover_crtsh():
+    """Certificate transparency via crt.sh. This service is occasionally slow/
+    rate-limited — we use a short per-query timeout and bail out early after
+    two consecutive failures instead of burning the full budget on a dead
+    upstream (crt.sh going down doesn't block the rest of the scan)."""
     out = set()
+    consecutive_failures = 0
     for q in ("%ollama%", "%open-webui%", "%litellm%", "%llama%", "%vllm%", "%textgen%", "%lmstudio%"):
+        if consecutive_failures >= 2:
+            break
         try:
             r = requests.get(f"https://crt.sh/?q={q}&output=json",
-                             headers={"User-Agent": UA}, timeout=25)
+                             headers={"User-Agent": UA}, timeout=10)
             if r.status_code == 200:
+                consecutive_failures = 0
                 for e in r.json():
                     for name in (e.get("name_value") or "").split("\n"):
                         name = name.strip().lower().lstrip("*.")
                         if name and re.fullmatch(r"[\w.-]+\.\w{2,}", name) and "ollama.com" not in name:
                             out.add(name)
+            else:
+                consecutive_failures += 1
         except Exception:
-            pass
+            consecutive_failures += 1
     return out
 
 def discover_certspotter():
-    """Certificate transparency via CertSpotter — cheap, ~10KB per base domain."""
+    """Certificate transparency via CertSpotter — cheap, ~10KB per base domain.
+    Covers the popular self-hosted LLM UI/proxy projects' own domains, whose
+    subdomains crop up as naming conventions people copy for their own nodes
+    (e.g. 'ollama.mydomain.com', 'chat.mydomain.com')."""
     out = set()
-    for base in ("ollama.com",):
+    for base in ("ollama.com", "openwebui.com", "litellm.ai", "vllm.ai"):
         try:
             r = requests.get("https://api.certspotter.com/v1/issuances",
                 params={"domain": base, "include_subdomains": "true", "expand": "dns_names"},
-                headers={"User-Agent": UA}, timeout=15)
+                headers={"User-Agent": UA}, timeout=12)
             if r.status_code == 200:
                 for e in r.json():
                     for name in e.get("dns_names", []):
@@ -295,14 +308,22 @@ def discover_certspotter():
     return out
 
 def discover_hackertarget():
+    """Subdomain enumeration via HackerTarget's free API. The free tier has a
+    small daily quota shared across all callers globally — when it's exceeded
+    the API returns a plain-text error message instead of hostnames, which we
+    explicitly detect and skip rather than accidentally treating the error
+    string as a candidate hostname."""
     out = set()
     for base in ("ollama.com",):
         try:
             r = requests.get(f"https://api.hackertarget.com/hostsearch/?q={base}",
                              headers={"User-Agent": UA}, timeout=15)
-            for line in r.text.strip().splitlines():
+            text = r.text.strip()
+            if not text or "api count exceeded" in text.lower() or "error" in text.lower()[:20]:
+                continue
+            for line in text.splitlines():
                 host = line.split(",")[0].strip().lower()
-                if host and host != base and "ollama.com" not in host:
+                if host and host != base and "ollama.com" not in host and re.fullmatch(r"[\w.-]+\.\w{2,}", host):
                     out.add(host)
         except Exception:
             pass
@@ -543,36 +564,53 @@ def probe_models(host, port, scheme):
     return [], None, {}
 
 def _make_challenge():
-    """A random, unguessable instruction-following probe. Canned/scripted honeypot
-    responses (fixed boilerplate text) can't satisfy this since the exact token
-    changes every call — unlike a generic 'hi' which any templated reply passes.
-    We deliberately do NOT tell the model to literally repeat a word we embed in
-    the prompt (an echo-bot could parrot the prompt text back and fake that) —
-    instead we ask for a short deterministic transform (uppercase + a fixed
-    prefix/suffix wrapper) of a random word, which forces it to be present in a
-    specific *derived* form that isn't just substring-copyable from the prompt."""
-    token = "".join(random.choices(string.ascii_lowercase, k=6))
-    wrapped = f"XZ-{token.upper()}-QY"
-    prompt = (f"This is a test. The secret word is '{token}'. Take the secret word, "
-              f"make it uppercase, and reply with ONLY this exact format and nothing "
-              f"else: XZ-<UPPERCASE_SECRET_WORD>-QY")
-    return wrapped, prompt
+    """A random, unguessable instruction-following probe: ask for a simple
+    direct echo of a random 6-letter token. Kept deliberately EASY (no
+    transformation) so weaker-but-real models still pass reliably — the
+    anti-honeypot power comes from combining this with:
+      1. the token itself changing every call (canned boilerplate replies
+         can't contain a string they were never told), and
+      2. _looks_like_prompt_echo() below, which separately catches bots that
+         just parrot big chunks of the prompt back verbatim instead of
+         actually answering it."""
+    token = "".join(random.choices(string.ascii_uppercase, k=6))
+    prompt = f"Reply with ONLY this word and nothing else: {token}"
+    return token, prompt
 
-def _response_honors_challenge(text: str, expected: str) -> bool:
-    """The reply must contain the expected wrapped/transformed token. A generic
-    canned response, or a naive bot that just echoes/repeats the raw prompt text,
-    fails this check since the exact wrapped form never appears in the prompt."""
-    return bool(text) and expected in text.upper()
+def _response_honors_challenge(text: str, token: str) -> bool:
+    """The reply must contain the literal token we asked for."""
+    return bool(text) and token in text.upper()
+
+def _looks_like_prompt_echo(prompt: str, response: str, min_run=25) -> bool:
+    """True if the response contains a long verbatim substring of the prompt
+    we sent — a strong signal of an echo-bot/honeypot that parrots the input
+    back (optionally with a canned prefix like 'Thanks for your prompt...')
+    rather than actually answering it. A real model paraphrasing or briefly
+    quoting a few words is fine; copying 25+ consecutive characters of our
+    own instruction text is not something a genuine answer would do."""
+    p = prompt.lower()
+    r = response.lower()
+    if len(p) < min_run:
+        return False
+    for i in range(0, len(p) - min_run, 5):
+        if p[i:i + min_run] in r:
+            return True
+    return False
 
 def real_test(host, port, scheme, model, api_style):
     """Send a randomized instruction-following challenge and confirm the model
     actually followed it (not just returned *some* HTTP-200 text — a canned/
-    templated honeypot reply won't contain the random token we asked for).
+    templated honeypot reply won't contain the random token we asked for, and
+    an echo-bot parroting our prompt back gets caught separately).
     Handles servers that ignore stream:false and return NDJSON chunks.
     Returns (ok: bool, response_text: str, fingerprint: str|None). fingerprint
     is the backend's self-reported system_fingerprint/model server id, used to
     catch honeypot farms that reuse the same backend signature across many IPs."""
     token, prompt = _make_challenge()
+
+    def _judge(content):
+        return _response_honors_challenge(content, token) and not _looks_like_prompt_echo(prompt, content)
+
     try:
         if api_style == "/v1/models":
             r = requests.post(f"{scheme}://{host}:{port}/v1/chat/completions",
@@ -590,14 +628,14 @@ def real_test(host, port, scheme, model, api_style):
                     choices = d.get("choices", [])
                     content = (choices[0].get("message", {}).get("content") or choices[0].get("text") or "") if choices else ""
                     fp = d.get("system_fingerprint")
-                    return _response_honors_challenge(content, token), content, fp
+                    return _judge(content), content, fp
                 except Exception:
                     # NDJSON stream despite stream:false — check first line has real content
                     first = text.splitlines()[0]
                     d = json.loads(first)
                     choices = d.get("choices", [])
                     content = (choices[0].get("message", {}).get("content") or choices[0].get("text") or "") if choices else ""
-                    return _response_honors_challenge(content, token), content, d.get("system_fingerprint")
+                    return _judge(content), content, d.get("system_fingerprint")
         else:
             r = requests.post(f"{scheme}://{host}:{port}/api/generate",
                 json={"model": model, "prompt": prompt, "stream": False,
@@ -610,7 +648,7 @@ def real_test(host, port, scheme, model, api_style):
                 try:
                     d = r.json()
                     resp = d.get("response", "")
-                    return _response_honors_challenge(resp, token), resp, None
+                    return _judge(resp), resp, None
                 except Exception:
                     # NDJSON stream despite stream:false — concat chunks
                     parts = []
@@ -622,7 +660,7 @@ def real_test(host, port, scheme, model, api_style):
                         if d.get("response") is not None:
                             parts.append(d["response"])
                     full = "".join(parts)
-                    return _response_honors_challenge(full, token), full, None
+                    return _judge(full), full, None
     except Exception:
         pass
     return False, "", None
@@ -829,7 +867,7 @@ def store_result(r, added_by="scanner"):
             (id, host, port, scheme, source, status, model_count, latency_ms, verified_at, last_check, added_by, error, archived, archive_reason)
             VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?,NULL,?,?)""",
             (nid, r["host"], r["port"], r["scheme"], r["source"], r["status"],
-             len(r["models"]), r["latency_ms"], added_by, archived, archive_reason))
+             len(r.get("working_models", [])), r["latency_ms"], added_by, archived, archive_reason))
         sizes = r.get("sizes", {})
         for m in r["models"]:
             working = 1 if m in r.get("working_models", []) else 0

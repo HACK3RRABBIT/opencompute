@@ -169,14 +169,41 @@ async def unarchive_node(node_id: str):
     return {"ok": True}
 
 @app.get("/api/models")
-async def list_all_models(include_archived: bool = False):
+async def list_all_models(include_archived: bool = False, working_only: bool = True, expand: bool = False):
+    """By default: only real, currently-working models (working=1), one row per
+    model with an aggregated node_count — NOT one row per (model, node) pair.
+    Pass expand=true to get the flat per-node breakdown (e.g. to pick which
+    specific node to hit), or working_only=false to also see untested/dead
+    candidates (useful for debugging why a model isn't showing up)."""
     conn = db()
-    q = """SELECT m.model_name, m.working, m.param_size_b, m.is_big,
-                  n.host, n.port, n.scheme, n.status, n.source, n.archived, n.archive_reason
+    if expand:
+        q = """SELECT m.model_name, m.working, m.param_size_b, m.is_big,
+                      n.host, n.port, n.scheme, n.status, n.source, n.archived, n.archive_reason
+               FROM models m JOIN nodes n ON m.node_id = n.id"""
+        conds = []
+        if not include_archived:
+            conds.append("n.archived = 0")
+        if working_only:
+            conds.append("m.working = 1")
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY m.is_big DESC, m.param_size_b DESC, m.model_name"
+        rows = conn.execute(q).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    q = """SELECT m.model_name, MAX(m.param_size_b) as param_size_b, MAX(m.is_big) as is_big,
+                  COUNT(DISTINCT n.id) as node_count,
+                  GROUP_CONCAT(DISTINCT n.source) as sources
            FROM models m JOIN nodes n ON m.node_id = n.id"""
+    conds = []
     if not include_archived:
-        q += " WHERE n.archived = 0"
-    q += " ORDER BY m.is_big DESC, m.param_size_b DESC, m.model_name"
+        conds.append("n.archived = 0")
+    if working_only:
+        conds.append("m.working = 1")
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    q += " GROUP BY m.model_name ORDER BY is_big DESC, param_size_b DESC, node_count DESC"
     rows = conn.execute(q).fetchall()
     conn.close()
     return [dict(r) for r in rows]
