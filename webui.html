@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" id="htmlRoot">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenCompute — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --background: #041c1c;
+    --foreground: #eafff4;
+    --card: #06231f;
+    --card-border: #123832;
+    --muted: #0a2b26;
+    --muted-foreground: #7fa89c;
+    --primary: #4ade80;
+    --primary-dim: #2f8f5c;
+    --warning: #ffbd38;
+    --destructive: #fb2c36;
+    --radius: .5rem;
+    --font-mono: 'JetBrains Mono', 'Courier New', ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    display: flex; min-height: 100vh;
+    background: var(--background); color: var(--foreground);
+    font-family: var(--font-mono);
+    font-size: 14px;
+  }
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: var(--primary-dim); color: #04120e; }
+
+  /* Sidebar */
+  .sidebar {
+    width: 232px; background: var(--card); border-left: 1px solid var(--card-border);
+    display: flex; flex-direction: column; padding: 18px 0; flex-shrink: 0;
+  }
+  html[dir="ltr"] .sidebar { border-left: none; border-right: 1px solid var(--card-border); }
+  .brand {
+    padding: 0 18px 16px; font-weight: 700; font-size: 15px; letter-spacing: 0.06em;
+    color: var(--foreground); border-bottom: 1px solid var(--card-border); text-transform: uppercase;
+  }
+  .brand .accent { color: var(--primary); display: block; }
+  .nav { list-style: none; padding: 12px 8px; margin: 0; flex: 1; }
+  .nav li a {
+    display: block; padding: 9px 12px; color: var(--muted-foreground); font-size: 12.5px;
+    letter-spacing: 0.06em; border-radius: calc(var(--radius) - 2px); margin-bottom: 2px; cursor: pointer;
+  }
+  .nav li a.active, .nav li a:hover {
+    color: var(--primary); background: rgba(74,222,128,0.08);
+  }
+  .sidebar-footer { padding: 14px 18px 0; border-top: 1px solid var(--card-border); font-size: 11.5px; color: var(--muted-foreground); }
+  .status-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background: var(--primary); margin-left:6px; box-shadow: 0 0 6px var(--primary); }
+  html[dir="ltr"] .status-dot { margin-left: 0; margin-right: 6px; }
+  .lang-switch { display: flex; gap: 6px; padding: 12px 18px 0; }
+  .lang-switch button {
+    flex: 1; background: var(--muted); border: 1px solid var(--card-border); color: var(--muted-foreground);
+    padding: 6px 8px; font-size: 11px; border-radius: calc(var(--radius) - 2px); cursor: pointer; font-family: inherit;
+  }
+  .lang-switch button.active { color: var(--primary); border-color: var(--primary-dim); background: rgba(74,222,128,0.08); }
+
+  /* Main */
+  .main { flex: 1; min-width: 0; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 26px; border-bottom: 1px solid var(--card-border); background: var(--card);
+  }
+  .topbar h1 { font-size: 16px; margin: 0; letter-spacing: 0.08em; color: var(--foreground); text-transform: uppercase; font-weight: 700; }
+  .content { padding: 22px 26px 40px; }
+  .tab-page { display: none; }
+  .tab-page.active { display: block; }
+
+  .stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .stat {
+    background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius);
+    padding: 14px 20px; min-width: 130px; flex: 1 1 150px;
+  }
+  .stat .num { font-size: 24px; font-weight: 700; color: var(--primary); line-height: 1; }
+  .stat .label { font-size: 10.5px; color: var(--muted-foreground); margin-top: 6px; letter-spacing: 0.06em; text-transform: uppercase; }
+
+  .panel {
+    background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius);
+    margin-bottom: 18px; overflow: hidden;
+  }
+  .panel-head {
+    padding: 11px 16px; border-bottom: 1px solid var(--card-border); font-size: 11.5px;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--primary); font-weight: 600;
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+  }
+  .panel-body { padding: 14px 16px; }
+
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button {
+    background: var(--muted); color: var(--primary); border: 1px solid var(--primary-dim);
+    padding: 9px 16px; border-radius: calc(var(--radius) - 2px); cursor: pointer; font-family: inherit;
+    font-size: 11.5px; letter-spacing: 0.05em; font-weight: 600; transition: background .15s;
+  }
+  button:hover { background: rgba(74,222,128,0.12); }
+  button.stop { color: var(--destructive); border-color: #7a2a2a; }
+  button.stop:hover { background: rgba(251,44,54,0.08); }
+  button.small { padding: 4px 10px; font-size: 10.5px; }
+  input[type=text], input[type=password], input[type=number], select {
+    background: var(--background); border: 1px solid var(--card-border); color: var(--foreground);
+    padding: 9px 12px; border-radius: calc(var(--radius) - 2px); font-family: inherit; font-size: 12px;
+    width: 340px; max-width: 100%;
+  }
+  select { width: auto; cursor: pointer; }
+  input[type=text]:focus, input[type=password]:focus, input[type=number]:focus, select:focus { outline: none; border-color: var(--primary-dim); }
+  input::placeholder { color: var(--muted-foreground); }
+
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 9px 12px; text-align: right; border-bottom: 1px solid var(--card-border); }
+  html[dir="ltr"] th, html[dir="ltr"] td { text-align: left; }
+  th { color: var(--muted-foreground); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; font-size: 10px; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--primary); }
+  th.sort-active { color: var(--primary); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(74,222,128,0.03); }
+
+  .badge { display:inline-block; padding: 2px 10px; border-radius: 3.4e38px; font-size: 10px; letter-spacing:0.04em; font-weight: 600; }
+  .badge.verified { background: rgba(74,222,128,0.12); color: var(--primary); border: 1px solid rgba(74,222,128,0.3); }
+  .badge.alive { background: rgba(255,189,56,0.12); color: var(--warning); border: 1px solid rgba(255,189,56,0.3); }
+  .badge.dead, .badge.unknown { background: rgba(127,168,156,0.1); color: var(--muted-foreground); border: 1px solid var(--card-border); }
+  .badge.archived { background: rgba(251,44,54,0.1); color: var(--destructive); border: 1px solid rgba(251,44,54,0.3); }
+
+  #log { font-size: 12px; color: var(--muted-foreground); margin-top: 10px; min-height: 16px; }
+  #log.busy { color: var(--warning); }
+  .empty-row td { color: var(--muted-foreground); text-align: center; padding: 22px; }
+
+  /* Bar chart (pure CSS, no external lib) */
+  .chart { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+  .chart-row { display: flex; align-items: center; gap: 10px; }
+  .chart-label { width: 110px; flex-shrink: 0; font-size: 11px; color: var(--muted-foreground); }
+  .chart-track { flex: 1; background: var(--muted); border-radius: 3px; height: 18px; overflow: hidden; display: flex; }
+  .chart-fill { background: linear-gradient(90deg, var(--primary-dim), var(--primary)); height: 100%; transition: width .3s; }
+  .chart-fill.secondary { background: linear-gradient(90deg, #7a5a1f, var(--warning)); }
+  .chart-value { width: 60px; text-align: left; font-size: 11px; color: var(--foreground); flex-shrink: 0; }
+
+  /* Settings */
+  .settings-row {
+    display: flex; align-items: center; justify-content: space-between; padding: 10px 0;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-row .settings-label { font-size: 13px; }
+  .settings-row .settings-desc { font-size: 11px; color: var(--muted-foreground); margin-top: 2px; }
+  .toggle {
+    position: relative; width: 42px; height: 22px; background: var(--muted);
+    border: 1px solid var(--card-border); border-radius: 22px; cursor: pointer; flex-shrink: 0;
+  }
+  .toggle.on { background: rgba(74,222,128,0.25); border-color: var(--primary-dim); }
+  .toggle-knob {
+    position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--muted-foreground); transition: transform .15s, background .15s;
+  }
+  .toggle.on .toggle-knob { background: var(--primary); transform: translateX(-20px); }
+  html[dir="ltr"] .toggle-knob { right: auto; left: 2px; }
+  html[dir="ltr"] .toggle.on .toggle-knob { transform: translateX(20px); }
+
+  .menu-toggle { display: none; }
+
+  @media (max-width: 860px) {
+    body { flex-direction: column; }
+    .sidebar {
+      width: 100%; border: none; border-bottom: 1px solid var(--card-border);
+      flex-direction: row; align-items: center; padding: 10px 14px; flex-wrap: wrap;
+    }
+    .brand { padding: 0 12px 0 0; border-bottom: none; font-size: 14px; white-space: nowrap; }
+    .brand .accent { display: inline; }
+    .lang-switch { padding: 0; width: auto; margin-right: 8px; }
+    html[dir="ltr"] .lang-switch { margin-right: 0; margin-left: 8px; }
+    .nav { display: none; flex: none; }
+    .nav.open { display: flex; flex-wrap: wrap; width: 100%; padding: 10px 0 0; }
+    .nav li { flex: 1 1 45%; }
+    .nav li a { border-radius: calc(var(--radius) - 2px); }
+    .menu-toggle {
+      display: inline-block; margin-right: auto; background: var(--muted);
+      border: 1px solid var(--card-border); color: var(--primary); padding: 6px 12px; font-size: 11px;
+    }
+    html[dir="ltr"] .menu-toggle { margin-right: 0; margin-left: auto; }
+    .sidebar-footer { display: none; }
+    .topbar { padding: 12px 14px; flex-wrap: wrap; gap: 6px; }
+    .content { padding: 14px; }
+    .stats { gap: 8px; }
+    .stat { flex: 1 1 calc(50% - 8px); min-width: 0; padding: 12px 14px; }
+    .stat .num { font-size: 19px; }
+    .controls { flex-direction: column; align-items: stretch; }
+    input[type=text], input[type=password], input[type=number] { width: 100%; }
+    .controls button { width: auto; flex: 1 1 auto; }
+    table { font-size: 11px; }
+    th, td { padding: 7px 8px; white-space: nowrap; }
+    .chart-label { width: 80px; }
+  }
+  @media (max-width: 480px) {
+    .stat { flex: 1 1 100%; }
+  }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="brand"><span class="accent" data-i18n="brandAccent">OPENCOMPUTE</span><span data-i18n="brandMain">SCANNER</span></div>
+  <div class="lang-switch">
+    <button id="btnFa" onclick="setLang('fa')">فارسی</button>
+    <button id="btnEn" class="active" onclick="setLang('en')">English</button>
+  </div>
+  <button class="menu-toggle" onclick="document.querySelector('.nav').classList.toggle('open')">☰ <span data-i18n="menu">Menu</span></button>
+  <ul class="nav">
+    <li><a class="active" data-tab="dashboard" onclick="setTab('dashboard')" data-i18n="navDashboard">Dashboard</a></li>
+    <li><a data-tab="models" onclick="setTab('models')" data-i18n="navModels">Models</a></li>
+    <li><a data-tab="nodes" onclick="setTab('nodes')" data-i18n="navNodes">Nodes</a></li>
+    <li><a data-tab="settings" onclick="setTab('settings')" data-i18n="navSettings">Settings</a></li>
+    <li><a href="/docs" target="_blank" data-i18n="navDocs">API Docs</a></li>
+  </ul>
+  <div class="sidebar-footer">
+    <span class="status-dot"></span><span data-i18n="scannerOnline">Scanner Online</span><br>
+    <span id="footerState" style="color:var(--muted-foreground)" data-i18n="idle">Idle</span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <h1 id="pageTitle" data-i18n="dashboard">Dashboard</h1>
+    <span id="topScanState" style="font-size:12px;color:var(--muted-foreground)"></span>
+  </div>
+
+  <div class="content">
+
+    <!-- ═══════════ DASHBOARD TAB ═══════════ -->
+    <div class="tab-page active" id="tab-dashboard">
+      <div class="stats" id="stats"></div>
+
+      <div class="panel">
+        <div class="panel-head" data-i18n="scanControl">Scan Control</div>
+        <div class="panel-body">
+          <div class="controls">
+            <button onclick="startScan()">▶ <span data-i18n="startScan">Start Scan</span></button>
+            <button class="stop" onclick="stopScan()">⏹ <span data-i18n="stopScan">Stop Scan</span></button>
+            <button id="btnContinuous" onclick="toggleContinuous()">🔁 <span id="continuousLabel" data-i18n="startContinuous">Continuous Auto-Scan</span></button>
+            <input type="text" id="manualTarget" data-i18n-placeholder="manualPlaceholder" placeholder="IP / domain / full URL — e.g. http://1.2.3.4:11434">
+            <button onclick="addManual()">➕ <span data-i18n="addManual">Add Manually</span></button>
+          </div>
+          <div id="log"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head" data-i18n="sourceChartTitle">Node distribution by discovery method</div>
+        <div class="panel-body">
+          <div class="chart" id="sourceChart"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ MODELS TAB ═══════════ -->
+    <div class="tab-page" id="tab-models">
+      <div class="panel">
+        <div class="panel-head">
+          <span><span data-i18n="modelsTitle">Tested Models</span> <span id="modelCount" style="color:var(--muted-foreground)"></span></span>
+          <span class="controls">
+            <select id="modelSourceFilter" onchange="renderModels()"></select>
+            <a href="/models" target="_blank" style="font-size:11px;color:var(--primary)" data-i18n="viewPlain">View plain in browser</a>
+          </span>
+        </div>
+        <div class="panel-body table-scroll" style="padding:0">
+          <table id="modelsTable">
+            <thead><tr>
+              <th class="sortable" onclick="setSort('models','model_name')" data-i18n="colModel">Model</th>
+              <th class="sortable" onclick="setSort('models','param_size_b')" data-i18n="colSize">Size</th>
+              <th class="sortable" onclick="setSort('models','host')" data-i18n="colNode">Node</th>
+              <th data-i18n="colSourceCol">Source</th>
+              <th class="sortable" onclick="setSort('models','working')" data-i18n="colRealStatus">Real Status</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ NODES TAB ═══════════ -->
+    <div class="tab-page" id="tab-nodes">
+      <div class="panel">
+        <div class="panel-head">
+          <span><span data-i18n="nodesTitle">Nodes</span> <span id="nodeCount" style="color:var(--muted-foreground)"></span></span>
+          <span class="controls">
+            <select id="nodeSourceFilter" onchange="renderNodes()"></select>
+            <select id="nodeStatusFilter" onchange="renderNodes()">
+              <option value="">— <span data-i18n="allStatuses">All statuses</span></option>
+              <option value="verified" data-i18n="statusVerified">verified</option>
+              <option value="alive" data-i18n="statusAlive">alive</option>
+              <option value="dead" data-i18n="statusDead">dead</option>
+            </select>
+            <label style="font-size:11px;color:var(--muted-foreground);display:flex;align-items:center;gap:4px">
+              <input type="checkbox" id="showArchived" onchange="loadNodes()"> <span data-i18n="showArchived">Show archived</span>
+            </label>
+            <a href="/nodes" target="_blank" style="font-size:11px;color:var(--primary)" data-i18n="viewPlain">View plain in browser</a>
+          </span>
+        </div>
+        <div class="panel-body table-scroll" style="padding:0">
+          <table id="nodesTable">
+            <thead><tr>
+              <th class="sortable" onclick="setSort('nodes','address')" data-i18n="colAddress">Host:Port</th>
+              <th class="sortable" onclick="setSort('nodes','status')" data-i18n="colStatus">Status</th>
+              <th class="sortable" onclick="setSort('nodes','model_count')" data-i18n="colModels">Models</th>
+              <th class="sortable" onclick="setSort('nodes','latency_ms')" data-i18n="colLatency">Latency</th>
+              <th class="sortable" onclick="setSort('nodes','source')" data-i18n="colSource">Source</th>
+              <th></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ SETTINGS TAB ═══════════ -->
+    <div class="tab-page" id="tab-settings">
+      <div class="panel">
+        <div class="panel-head" data-i18n="apiKeySettings">API Key</div>
+        <div class="panel-body">
+          <div class="controls">
+            <input type="text" id="apiKeyInput" placeholder="sk-1234">
+            <button onclick="toggleShowApiKey()" id="btnShowKey" data-i18n="showKey">Show</button>
+            <button onclick="saveApiKey()" data-i18n="save">Save</button>
+          </div>
+          <div id="apiKeyLog" style="font-size:12px;color:var(--muted-foreground);margin-top:8px"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head" data-i18n="scannerKeysSettings">Scan Source API Keys</div>
+        <div class="panel-body">
+          <div class="settings-desc" style="margin-bottom:12px" data-i18n="scannerKeysDesc">
+            Enter your own API key for each source. The system tests it automatically before enabling.
+          </div>
+          <div id="scannerKeysList"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head" data-i18n="scanSourcesSettings">Scan Sources</div>
+        <div class="panel-body" id="sourceToggles"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head" data-i18n="continuousSettings">Continuous Scan</div>
+        <div class="panel-body">
+          <div class="settings-row">
+            <div>
+              <div class="settings-label" data-i18n="intervalLabel">Interval between rounds (seconds)</div>
+              <div class="settings-desc" data-i18n="intervalDesc">Minimum 30s — default 180s (3 min)</div>
+            </div>
+            <div class="controls">
+              <input type="number" id="intervalInput" min="30" style="width:100px">
+              <button onclick="saveInterval()" data-i18n="save">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const I18N = {
+  fa: {
+    brandAccent: "اوپن‌کامپیوت", brandMain: "اسکنر", menu: "منو",
+    navDashboard: "داشبورد", navModels: "مدل‌ها", navNodes: "نودها", navSettings: "تنظیمات", navDocs: "مستندات API",
+    scannerOnline: "اسکنر آنلاین است", idle: "بی‌کار", dashboard: "داشبورد",
+    scanControl: "کنترل اسکن", startScan: "شروع اسکن", stopScan: "توقف اسکن",
+    startContinuous: "اسکن خودکار مداوم", stopContinuous: "توقف اسکن مداوم", continuousOn: "مداوم: روشن 🟢",
+    manualPlaceholder: "آی‌پی / دامنه / آدرس کامل — مثل http://1.2.3.4:11434", addManual: "اضافه دستی",
+    nodesTitle: "نودها", colAddress: "آدرس:پورت", colStatus: "وضعیت", colModels: "مدل‌ها",
+    colLatency: "تأخیر", colSource: "منبع", colSize: "اندازه", colSourceCol: "منبع",
+    modelsTitle: "مدل‌های تست‌شده", colModel: "مدل", colNode: "نود", colRealStatus: "وضعیت واقعی",
+    statTotalNodes: "کل نودها", statVerified: "تأیید شده (تست واقعی)", statWorkingModels: "مدل کار می‌کند",
+    statTotalModels: "کل مدل‌ها دیده شده", statBigModels: "مدل‌های بزرگ و قدرتمند", statArchived: "آرشیو شده (نیاز به کردیت)",
+    noNodes: "هنوز نودی پیدا نشده — اسکن رو شروع کن",
+    noModels: "هنوز مدلی تست نشده", scanning: "در حال اسکن", checked: "بررسی شده", found: "یافت شده", verified: "تأیید",
+    ready: "آماده.", lastScan: "آخرین اسکن", found2: "یافت", verified2: "تأیید",
+    checking: "در حال بررسی", added: "اضافه شد", workingModelsLabel: "مدل‌های کارکننده",
+    none: "هیچ", error: "خطا", del: "حذف", big: "بزرگ 💪",
+    statusVerified: "تأیید شده", statusAlive: "زنده", statusDead: "مرده", statusUnknown: "نامشخص",
+    scanning2: "در حال اسکن...", round: "دور",
+    sourceChartTitle: "توزیع نودها بر اساس روش کشف", allSources: "همه منابع", allStatuses: "همه وضعیت‌ها",
+    showArchived: "نمایش آرشیوشده‌ها", viewPlain: "مشاهده ساده در مرورگر",
+    apiKeySettings: "کلید API", showKey: "نمایش", hideKey: "مخفی", save: "ذخیره",
+    scanSourcesSettings: "منابع اسکن (روشن/خاموش)", continuousSettings: "اسکن مداوم",
+    intervalLabel: "فاصله زمانی بین دورها (ثانیه)", intervalDesc: "حداقل ۳۰ ثانیه — پیش‌فرض ۱۸۰ ثانیه (۳ دقیقه)",
+    savedOk: "ذخیره شد ✅", src_crtsh: "crt.sh (گواهی SSL)", src_certspotter: "CertSpotter (گواهی SSL)",
+    src_hackertarget: "HackerTarget (زیردامنه)", src_shodan_web: "Shodan (وب‌سرچ)", src_shodan_api: "Shodan (API واقعی)",
+    src_leakix: "LeakIX (API)", src_censys: "Censys (API)",
+    src_port_sweep: "اسکن پورت", src_manual_seed: "لیست دستی اولیه",
+    scannerKeysSettings: "کلیدهای API منابع اسکن",
+    scannerKeysDesc: "برای هر منبع، کلید API خودت رو وارد کن. قبل از فعال‌شدن، سیستم به‌صورت خودکار کلید رو تست می‌کنه.",
+  },
+  en: {
+    brandAccent: "OPENCOMPUTE", brandMain: "SCANNER", menu: "Menu",
+    navDashboard: "Dashboard", navModels: "Models", navNodes: "Nodes", navSettings: "Settings", navDocs: "API Docs",
+    scannerOnline: "Scanner Online", idle: "Idle", dashboard: "Dashboard",
+    scanControl: "Scan Control", startScan: "Start Scan", stopScan: "Stop Scan",
+    startContinuous: "Continuous Auto-Scan", stopContinuous: "Stop Continuous", continuousOn: "Continuous: ON 🟢",
+    manualPlaceholder: "IP / domain / full URL — e.g. http://1.2.3.4:11434", addManual: "Add Manually",
+    nodesTitle: "Nodes", colAddress: "Host:Port", colStatus: "Status", colModels: "Models",
+    colLatency: "Latency", colSource: "Source", colSize: "Size", colSourceCol: "Source",
+    modelsTitle: "Tested Models", colModel: "Model", colNode: "Node", colRealStatus: "Real Status",
+    statTotalNodes: "Total Nodes", statVerified: "Verified (real test)", statWorkingModels: "Working Models",
+    statTotalModels: "Total Models Seen", statBigModels: "Big/Powerful Models", statArchived: "Archived (needs credit)",
+    noNodes: "No nodes found yet — start a scan",
+    noModels: "No models tested yet", scanning: "Scanning", checked: "checked", found: "found", verified: "verified",
+    ready: "Ready.", lastScan: "Last scan", found2: "found", verified2: "verified",
+    checking: "Checking", added: "Added", workingModelsLabel: "Working models",
+    none: "none", error: "Error", del: "Delete", big: "Big 💪",
+    statusVerified: "verified", statusAlive: "alive", statusDead: "dead", statusUnknown: "unknown",
+    scanning2: "Scanning...", round: "round",
+    sourceChartTitle: "Node distribution by discovery method", allSources: "All sources", allStatuses: "All statuses",
+    showArchived: "Show archived", viewPlain: "View plain in browser",
+    apiKeySettings: "API Key", showKey: "Show", hideKey: "Hide", save: "Save",
+    scanSourcesSettings: "Scan Sources (on/off)", continuousSettings: "Continuous Scan",
+    intervalLabel: "Interval between rounds (seconds)", intervalDesc: "Minimum 30s — default 180s (3 min)",
+    savedOk: "Saved ✅", src_crtsh: "crt.sh (SSL cert)", src_certspotter: "CertSpotter (SSL cert)",
+    src_hackertarget: "HackerTarget (subdomains)", src_shodan_web: "Shodan (web search)", src_shodan_api: "Shodan (real API)",
+    src_leakix: "LeakIX (API)", src_censys: "Censys (API)",
+    src_port_sweep: "Port sweep", src_manual_seed: "Manual seed list",
+    scannerKeysSettings: "Scan Source API Keys",
+    scannerKeysDesc: "Enter your own API key for each source. The system tests it automatically before enabling.",
+  }
+};
+let LANG = localStorage.getItem('oc_lang') || 'en';
+let CURRENT_TAB = 'dashboard';
+let API_KEY_VISIBLE = false;
+let SORT_STATE = { nodes: {key: 'latency_ms', dir: 1}, models: {key: 'model_name', dir: 1} };
+let LAST_NODES = [], LAST_MODELS = [], LAST_SOURCES = [];
+
+function t(key) { return I18N[LANG][key] || key; }
+
+function setLang(lang) {
+  LANG = lang;
+  localStorage.setItem('oc_lang', lang);
+  document.getElementById('htmlRoot').lang = lang;
+  document.getElementById('htmlRoot').dir = lang === 'fa' ? 'rtl' : 'ltr';
+  document.getElementById('btnFa').classList.toggle('active', lang === 'fa');
+  document.getElementById('btnEn').classList.toggle('active', lang === 'en');
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
+  });
+  populateSourceFilters();
+  refresh();
+}
+
+function setTab(tabName) {
+  CURRENT_TAB = tabName;
+  document.querySelectorAll('.tab-page').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + tabName).classList.add('active');
+  document.querySelectorAll('.nav li a[data-tab]').forEach(el => el.classList.toggle('active', el.dataset.tab === tabName));
+  document.getElementById('pageTitle').textContent = t(
+    { dashboard: 'navDashboard', models: 'navModels', nodes: 'navNodes', settings: 'navSettings' }[tabName]
+  );
+  if (tabName === 'nodes') loadNodes();
+  if (tabName === 'models') loadModels();
+  if (tabName === 'settings') loadSettings();
+}
+
+function setSort(table, key) {
+  const s = SORT_STATE[table];
+  if (s.key === key) { s.dir *= -1; } else { s.key = key; s.dir = 1; }
+  if (table === 'nodes') renderNodes(); else renderModels();
+}
+
+const STATUS_KEY = { verified: 'statusVerified', alive: 'statusAlive', dead: 'statusDead', unknown: 'statusUnknown' };
+function badge(status) {
+  return `<span class="badge ${status}">${t(STATUS_KEY[status] || 'statusUnknown')}</span>`;
+}
+
+async function refresh() {
+  const stats = await (await fetch('/api/stats')).json();
+  const s = stats.scan_state;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="num">${stats.total_nodes}</div><div class="label">${t('statTotalNodes')}</div></div>
+    <div class="stat"><div class="num">${stats.verified}</div><div class="label">${t('statVerified')}</div></div>
+    <div class="stat"><div class="num">${stats.working_models}</div><div class="label">${t('statWorkingModels')}</div></div>
+    <div class="stat"><div class="num" style="color:var(--warning)">${stats.big_models || 0}</div><div class="label">${t('statBigModels')}</div></div>
+    <div class="stat"><div class="num">${stats.total_models}</div><div class="label">${t('statTotalModels')}</div></div>
+    <div class="stat"><div class="num" style="color:var(--destructive)">${stats.archived || 0}</div><div class="label">${t('statArchived')}</div></div>
+  `;
+  const logEl = document.getElementById('log');
+  if (s.running) {
+    logEl.className = 'busy';
+    const roundTxt = s.round ? ` — ${t('round')} ${s.round}` : '';
+    logEl.innerText = `⏳ ${t('scanning')}: ${s.phase} — ${t('checked')} ${s.checked}/${s.total} — ${t('found')} ${s.found} (${t('verified')} ${s.verified})${roundTxt}`;
+  } else {
+    logEl.className = '';
+    logEl.innerText = stats.last_scan ? `${t('ready')} ${t('lastScan')}: ${stats.last_scan.found} ${t('found2')} / ${stats.last_scan.verified} ${t('verified2')}` : t('ready');
+  }
+  document.getElementById('footerState').innerText = s.running ? t('scanning2') : t('idle');
+  document.getElementById('topScanState').innerText = s.running ? `${s.phase} (${s.checked}/${s.total})` : '';
+
+  const btnCont = document.getElementById('btnContinuous');
+  const contLabel = document.getElementById('continuousLabel');
+  if (s.continuous) {
+    btnCont.classList.add('stop');
+    contLabel.innerText = t('stopContinuous') + ' · ' + t('continuousOn');
+  } else {
+    btnCont.classList.remove('stop');
+    contLabel.innerText = t('startContinuous');
+  }
+
+  await loadSourceChart();
+  if (CURRENT_TAB === 'nodes') await loadNodes();
+  if (CURRENT_TAB === 'models') await loadModels();
+}
+
+function sourceLabel(src) {
+  return t('src_' + src) || src;
+}
+
+async function loadSourceChart() {
+  const sources = await (await fetch('/api/stats/sources')).json();
+  LAST_SOURCES = sources;
+  const maxNodes = Math.max(1, ...sources.map(s => s.nodes_total));
+  const container = document.getElementById('sourceChart');
+  const rows = sources.filter(s => s.nodes_total > 0 || s.models_total > 0);
+  container.innerHTML = rows.length ? rows.map(s => `
+    <div class="chart-row">
+      <div class="chart-label">${sourceLabel(s.source)}</div>
+      <div class="chart-track">
+        <div class="chart-fill" style="width:${(s.nodes_total / maxNodes * 100).toFixed(1)}%"></div>
+      </div>
+      <div class="chart-value">${s.nodes_verified}/${s.nodes_total}</div>
+    </div>`).join('') : `<div style="color:var(--muted-foreground);font-size:12px">${t('noNodes')}</div>`;
+  populateSourceFilters();
+}
+
+function populateSourceFilters() {
+  const nodeSel = document.getElementById('nodeSourceFilter');
+  const modelSel = document.getElementById('modelSourceFilter');
+  if (!nodeSel || !modelSel) return;
+  const prevNode = nodeSel.value, prevModel = modelSel.value;
+  const opts = `<option value="">— ${t('allSources')}</option>` +
+    LAST_SOURCES.map(s => `<option value="${s.source}">${sourceLabel(s.source)}</option>`).join('');
+  nodeSel.innerHTML = opts;
+  modelSel.innerHTML = opts;
+  nodeSel.value = prevNode || '';
+  modelSel.value = prevModel || '';
+}
+
+function sourceBase(src) {
+  if (!src) return 'unknown';
+  const s = src.split(':')[0].toLowerCase();
+  const map = {'crt.sh':'crtsh','certspotter':'certspotter','hackertarget':'hackertarget',
+    'shodan-web':'shodan_web','leakix':'leakix','port-sweep':'port_sweep',
+    'user-seed':'manual_seed','manual':'manual_seed'};
+  return map[s] || s;
+}
+
+async function loadNodes() {
+  const includeArchived = document.getElementById('showArchived').checked;
+  LAST_NODES = await (await fetch('/api/nodes?include_archived=' + includeArchived)).json();
+  document.getElementById('nodeCount').innerText = '(' + LAST_NODES.length + ')';
+  renderNodes();
+}
+
+function renderNodes() {
+  const srcFilter = document.getElementById('nodeSourceFilter').value;
+  const statusFilter = document.getElementById('nodeStatusFilter').value;
+  let rows = LAST_NODES.filter(n =>
+    (!srcFilter || sourceBase(n.source) === srcFilter) &&
+    (!statusFilter || n.status === statusFilter));
+  const { key, dir } = SORT_STATE.nodes;
+  rows = rows.slice().sort((a, b) => {
+    let av, bv;
+    if (key === 'address') { av = a.host + ':' + a.port; bv = b.host + ':' + b.port; }
+    else { av = a[key]; bv = b[key]; }
+    if (av == null) av = '';
+    if (bv == null) bv = '';
+    if (typeof av === 'string') return av.localeCompare(bv) * dir;
+    return (av - bv) * dir;
+  });
+  document.querySelector('#nodesTable tbody').innerHTML = rows.length ? rows.map(n => `
+    <tr>
+      <td>${n.scheme || 'http'}://${n.host}:${n.port}</td>
+      <td>${n.archived ? '<span class="badge archived">' + (LANG === 'fa' ? 'آرشیو' : 'archived') + '</span>' : badge(n.status)}</td>
+      <td>${n.model_count}</td>
+      <td>${n.latency_ms || '-'}ms</td>
+      <td style="color:var(--muted-foreground)">${sourceLabel(sourceBase(n.source))}</td>
+      <td>${n.archived
+          ? `<button class="small" onclick="unarchiveNode('${n.id}')">${LANG === 'fa' ? 'بازگردانی' : 'restore'}</button>`
+          : `<button class="small stop" onclick="delNode('${n.id}')">${t('del')}</button>`}</td>
+    </tr>`).join('') : `<tr class="empty-row"><td colspan="6">${t('noNodes')}</td></tr>`;
+}
+
+async function loadModels() {
+  LAST_MODELS = await (await fetch('/api/models')).json();
+  document.getElementById('modelCount').innerText = '(' + LAST_MODELS.length + ')';
+  renderModels();
+}
+
+function renderModels() {
+  const srcFilter = document.getElementById('modelSourceFilter').value;
+  let rows = LAST_MODELS.filter(m => !srcFilter || sourceBase(m.source) === srcFilter);
+  const { key, dir } = SORT_STATE.models;
+  rows = rows.slice().sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (av == null) av = '';
+    if (bv == null) bv = '';
+    if (typeof av === 'string') return av.localeCompare(bv) * dir;
+    return (av - bv) * dir;
+  });
+  document.querySelector('#modelsTable tbody').innerHTML = rows.length ? rows.map(m => `
+    <tr>
+      <td>${m.is_big ? '💪 ' : ''}${m.model_name}</td>
+      <td>${m.param_size_b ? m.param_size_b + 'B' : '-'}${m.is_big ? ' <span class="badge verified">' + t('big') + '</span>' : ''}</td>
+      <td style="color:var(--muted-foreground)">${m.scheme}://${m.host}:${m.port}</td>
+      <td style="color:var(--muted-foreground)">${sourceLabel(sourceBase(m.source))}</td>
+      <td>${m.working ? badge('verified') : badge('dead')}</td>
+    </tr>`).join('') : `<tr class="empty-row"><td colspan="5">${t('noModels')}</td></tr>`;
+}
+
+async function startScan() {
+  await fetch('/api/scan/start', { method: 'POST' });
+  refresh();
+}
+async function stopScan() {
+  await fetch('/api/scan/stop', { method: 'POST' });
+  refresh();
+}
+async function toggleContinuous() {
+  const stats = await (await fetch('/api/stats')).json();
+  if (stats.scan_state.continuous) {
+    await fetch('/api/scan/continuous/stop', { method: 'POST' });
+  } else {
+    await fetch('/api/scan/continuous/start', { method: 'POST' });
+  }
+  refresh();
+}
+async function addManual() {
+  const target = document.getElementById('manualTarget').value.trim();
+  if (!target) return;
+  const logEl = document.getElementById('log');
+  logEl.innerText = `${t('checking')} ${target} ...`;
+  const res = await (await fetch('/api/nodes/add', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({target})
+  })).json();
+  logEl.innerText = res.ok
+    ? `✅ ${t('added')}: ${res.status} — ${t('workingModelsLabel')}: ${(res.working_models||[]).join(', ') || t('none')}`
+    : `❌ ${t('error')}: ${res.error}`;
+  document.getElementById('manualTarget').value = '';
+  refresh();
+}
+async function delNode(id) {
+  await fetch('/api/nodes/' + encodeURIComponent(id), { method: 'DELETE' });
+  loadNodes();
+}
+async function unarchiveNode(id) {
+  await fetch('/api/nodes/' + encodeURIComponent(id) + '/unarchive', { method: 'POST' });
+  loadNodes();
+}
+
+// ── Settings ──
+async function loadSettings() {
+  const keyData = await (await fetch('/api/settings/api-key')).json();
+  document.getElementById('apiKeyInput').value = keyData.api_key;
+  document.getElementById('apiKeyInput').type = API_KEY_VISIBLE ? 'text' : 'password';
+
+  const intervalData = await (await fetch('/api/settings/continuous-interval')).json();
+  document.getElementById('intervalInput').value = intervalData.interval_seconds;
+
+  const sources = await (await fetch('/api/settings/sources')).json();
+  const container = document.getElementById('sourceToggles');
+  container.innerHTML = Object.entries(sources).map(([key, enabled]) => `
+    <div class="settings-row">
+      <div class="settings-label">${sourceLabel(key)}</div>
+      <div class="toggle ${enabled ? 'on' : ''}" onclick="toggleSource('${key}', this)"><div class="toggle-knob"></div></div>
+    </div>`).join('');
+
+  await loadScannerKeys();
+}
+
+async function loadScannerKeys() {
+  const keys = await (await fetch('/api/settings/scanner-keys')).json();
+  const container = document.getElementById('scannerKeysList');
+  const rows = [];
+  for (const [source, info] of Object.entries(keys)) {
+    if (source === 'censys_secret') continue; // rendered together with censys_id
+    const statusBadge = info.configured
+      ? `<span class="badge verified">${info.masked}</span>`
+      : `<span class="badge unknown">${LANG === 'fa' ? 'تنظیم نشده' : 'not set'}</span>`;
+    if (source === 'censys_id') {
+      rows.push(`
+        <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="settings-label">${info.label.replace(' (API ID)','')} ${statusBadge}</div>
+            ${info.configured ? `<button class="small stop" onclick="clearScannerKey('censys')">${LANG==='fa'?'حذف':'clear'}</button>` : ''}
+          </div>
+          <div class="controls">
+            <input type="text" id="key-censys-id" placeholder="Censys API ID">
+            <input type="text" id="key-censys-secret" placeholder="Censys API Secret">
+            <button onclick="testScannerKey('censys')">${LANG === 'fa' ? 'تست و ذخیره' : 'Test & Save'}</button>
+          </div>
+          <div id="log-censys" style="font-size:11px;color:var(--muted-foreground)"></div>
+        </div>`);
+    } else {
+      rows.push(`
+        <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="settings-label">${info.label} ${statusBadge}</div>
+            ${info.configured ? `<button class="small stop" onclick="clearScannerKey('${source}')">${LANG==='fa'?'حذف':'clear'}</button>` : ''}
+          </div>
+          <div class="controls">
+            <input type="text" id="key-${source}" placeholder="${info.label} API Key">
+            <button onclick="testScannerKey('${source}')">${LANG === 'fa' ? 'تست و ذخیره' : 'Test & Save'}</button>
+          </div>
+          <div id="log-${source}" style="font-size:11px;color:var(--muted-foreground)"></div>
+        </div>`);
+    }
+  }
+  container.innerHTML = rows.join('<hr style="border-color:var(--card-border);margin:6px 0">');
+}
+
+async function testScannerKey(source) {
+  const logEl = document.getElementById('log-' + source);
+  let body = { source };
+  if (source === 'censys') {
+    body.api_id = document.getElementById('key-censys-id').value.trim();
+    body.api_secret = document.getElementById('key-censys-secret').value.trim();
+    if (!body.api_id || !body.api_secret) return;
+  } else {
+    body.key = document.getElementById('key-' + source).value.trim();
+    if (!body.key) return;
+  }
+  logEl.innerText = LANG === 'fa' ? 'در حال تست...' : 'Testing...';
+  const res = await (await fetch('/api/settings/scanner-keys/test', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  })).json();
+  logEl.innerText = (res.ok ? '✅ ' : '❌ ') + res.message;
+  if (res.ok) { loadScannerKeys(); }
+}
+
+async function clearScannerKey(source) {
+  await fetch('/api/settings/scanner-keys/' + source, { method: 'DELETE' });
+  loadScannerKeys();
+}
+
+async function toggleSource(key, el) {
+  const nowOn = !el.classList.contains('on');
+  el.classList.toggle('on', nowOn);
+  await fetch('/api/settings/sources', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ sources: { [key]: nowOn } })
+  });
+}
+
+function toggleShowApiKey() {
+  API_KEY_VISIBLE = !API_KEY_VISIBLE;
+  document.getElementById('apiKeyInput').type = API_KEY_VISIBLE ? 'text' : 'password';
+  document.getElementById('btnShowKey').lastChild.textContent = ' ' + t(API_KEY_VISIBLE ? 'hideKey' : 'showKey');
+}
+
+async function saveApiKey() {
+  const key = document.getElementById('apiKeyInput').value.trim();
+  if (!key) return;
+  await fetch('/api/settings/api-key', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ api_key: key })
+  });
+  document.getElementById('apiKeyLog').innerText = t('savedOk');
+}
+
+async function saveInterval() {
+  const val = parseInt(document.getElementById('intervalInput').value, 10);
+  if (!val || val < 30) return;
+  await fetch('/api/settings/continuous-interval', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ interval_seconds: val })
+  });
+  document.getElementById('apiKeyLog').innerText = t('savedOk');
+}
+
+setLang(LANG);
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# Database (contains scanned node IPs/data — not meant for version control)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Secrets
+.env
+.webui_secret_key
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
