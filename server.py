@@ -72,7 +72,16 @@ async def lifespan(app: FastAPI):
         scanner.stop_continuous()
     except Exception as e:
         print(f"⚠️ error stopping continuous scan/masscan on shutdown: {e}")
-    print("✅ shutdown cleanup done")
+    print("✅ shutdown cleanup done — forcing immediate exit")
+    # Python's normal interpreter exit waits (via an internal atexit hook) for
+    # every concurrent.futures.ThreadPoolExecutor worker thread to finish —
+    # these are NOT daemon threads. If a validation round's threadpool has a
+    # worker mid-request against a slow/unreachable node (up to ~45s timeout),
+    # process exit blocks on that join even though the important cleanup
+    # (masscan SIGINT + resume checkpoint saved) already happened above. Rather
+    # than risk creeping back up to systemd's TimeoutStopSec, hard-exit now —
+    # everything that matters for a clean resume is already on disk.
+    os._exit(0)
 
 app = FastAPI(title="OpenCompute")
 app.router.lifespan_context = lifespan
