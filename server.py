@@ -8,6 +8,7 @@ OpenCompute — Load Balancer for discovered Ollama-compatible model endpoints.
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import sqlite3, threading, pathlib, os
 import requests
 from contextlib import asynccontextmanager
@@ -39,11 +40,30 @@ def db():
 async def lifespan(app: FastAPI):
     scanner.init_db()
     print("✅ Database ready")
+    # Auto-resume on every process start (systemd restart, reboot, crash
+    # recovery) so a masscan-only 24/7 deployment never needs a human to
+    # notice it stopped and manually restart it. masscan resumes from
+    # paused.conf when present (or starts fresh on first-ever boot); the
+    # continuous scan loop is idempotent to call every start.
+    if scanner.get_enabled_sources().get("masscan", True):
+        try:
+            r = scanner.start_masscan()
+            print(f"🛰 masscan auto-start: {r.get('message')}")
+        except Exception as e:
+            print(f"⚠️ masscan auto-start failed: {e}")
+    try:
+        interval = int(scanner.get_setting("continuous_interval", 180))
+        if scanner.start_continuous(interval_seconds=interval):
+            print(f"🔁 continuous scan auto-started (interval={interval}s)")
+    except Exception as e:
+        print(f"⚠️ continuous scan auto-start failed: {e}")
     yield
 
 app = FastAPI(title="OpenCompute")
 app.router.lifespan_context = lifespan
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+STATIC_DIR = pathlib.Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 def _proto(port):
     return "https" if port == 443 else "http"

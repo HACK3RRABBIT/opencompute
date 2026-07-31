@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="sweep" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8effc2"/>
+      <stop offset="100%" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="48" fill="#04120a"/>
+
+  <!-- radar rings: bold, high-contrast -->
+  <circle cx="128" cy="128" r="92" fill="none" stroke="#22c55e" stroke-width="6" opacity="0.95"/>
+  <circle cx="128" cy="128" r="60" fill="none" stroke="#22c55e" stroke-width="5" opacity="0.6"/>
+
+  <!-- scan sweep wedge, bold and bright -->
+  <path d="M128 128 L128 20 A108 108 0 0 1 204 60 Z" fill="url(#sweep)" opacity="0.9"/>
+
+  <!-- two clear "discovered node" dots -->
+  <circle cx="178" cy="86" r="12" fill="#eafff2"/>
+  <circle cx="80" cy="168" r="9" fill="#22c55e"/>
+
+  <!-- central core -->
+  <circle cx="128" cy="128" r="22" fill="#04120a" stroke="#eafff2" stroke-width="7"/>
+  <circle cx="128" cy="128" r="8" fill="#eafff2"/>
+</svg>

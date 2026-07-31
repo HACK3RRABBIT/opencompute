@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="static/logo.svg" alt="OpenCompute logo" width="120" height="120">
+</p>
+
 # OpenCompute
 
 Self-hosted, OpenAI-compatible API that aggregates publicly-exposed Ollama-compatible

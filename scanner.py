@@ -226,7 +226,7 @@ _masscan_last_error = None
 def get_masscan_config():
     return {
         "target": get_setting("masscan_target", "0.0.0.0/0"),
-        "rate": int(get_setting("masscan_rate", "2000")),
+        "rate": int(get_setting("masscan_rate", "100000")),
         "ports": get_setting("masscan_ports", "11434"),
         "excludes": get_setting("masscan_excludes", DEFAULT_MASSCAN_EXCLUDES),
     }
@@ -1498,12 +1498,21 @@ def continuous_scan(interval_seconds=180, include_manual_seed_first_only=True):
     """Loop full_scan() back-to-back with a short pause between rounds, until stop_continuous()
     is called. Each round re-does discovery (crt.sh/certspotter/shodan/leakix are all rate-limit
     friendly at this cadence) plus the full port sweep, so newly-appeared or moved nodes get
-    picked up automatically without babysitting."""
+    picked up automatically without babysitting. Also acts as a masscan watchdog: if the sweep
+    process died for any reason (OOM-killed, network blip, provider hiccup) between rounds, it's
+    restarted automatically — a masscan-only 24/7 deployment should never need a human to notice
+    the sweep silently stopped and nudge it back on."""
     _continuous_running.set()
     round_num = 0
     while _continuous_running.is_set():
         round_num += 1
         include_seed = include_manual_seed_first_only and round_num == 1
+        try:
+            if get_enabled_sources().get("masscan", True) and not is_masscan_running():
+                r = start_masscan()
+                print(f"[continuous] masscan watchdog restarted it: {r.get('message')}")
+        except Exception as e:
+            print(f"[continuous] masscan watchdog error: {e}")
         try:
             _scan_state["round"] = round_num
             result = full_scan(include_manual_seed=include_seed)
