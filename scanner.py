@@ -280,7 +280,15 @@ def _get_router_info():
 
 def _masscan_cmd(cfg, resume=False):
     if resume and os.path.exists(MASS_PAUSED):
-        return ["masscan", "--resume", MASS_PAUSED, "-oJ", MASS_RESULTS, "--wait", "5"]
+        # masscan allows overriding a handful of options (rate, wait) on top of
+        # a resumed scan — without passing --rate here, resume silently reuses
+        # whatever rate was active when it was paused, ignoring any rate change
+        # made via Settings since then. --excludefile is NOT optional on resume:
+        # without it masscan refuses with "FAIL: range too big, need confirmation"
+        # (the exclude ranges aren't persisted in paused.conf) and exits
+        # immediately with no scan output — looks like a silent hang otherwise.
+        return ["masscan", "--resume", MASS_PAUSED, "--rate", str(cfg["rate"]),
+                "--excludefile", MASS_EXCLUDES, "-oJ", MASS_RESULTS, "--wait", "5"]
     cmd = ["masscan", cfg["target"], "-p" + cfg["ports"], "--rate", str(cfg["rate"]),
            "--excludefile", MASS_EXCLUDES, "-oJ", MASS_RESULTS, "--wait", "5",
            "--interactive"]
@@ -315,6 +323,16 @@ def start_masscan():
                     cmd, stdout=logf, stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL, cwd=os.path.dirname(os.path.abspath(__file__)))
             _masscan_started_at = time.time()
+            # Give it a moment and check it didn't immediately die (bad resume
+            # file, config error, permission issue) — Popen succeeding only
+            # means the OS launched the process, not that masscan is actually
+            # scanning. A silent early-exit here previously looked identical
+            # to "running fine" from the caller's perspective.
+            time.sleep(1.5)
+            if _masscan_proc.poll() is not None:
+                _masscan_last_error = f"masscan exited immediately (code {_masscan_proc.returncode}) — check masscan.log"
+                _masscan_proc = None
+                return {"ok": False, "message": _masscan_last_error}
             _masscan_last_error = None
             return {"ok": True, "message": "resumed from paused.conf" if resume else "started",
                     "pid": _masscan_proc.pid, "cmd": " ".join(cmd)}
