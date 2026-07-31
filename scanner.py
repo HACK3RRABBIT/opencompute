@@ -278,8 +278,29 @@ def _get_router_info():
             pass
     return iface, gw, mac
 
+def _sanitize_paused_conf():
+    """masscan 1.3.2 writes a 'nocapture = servername' line into paused.conf
+    when it saves its resume checkpoint (SIGINT), but its own config parser
+    doesn't recognize that option name on --resume — every resume attempt
+    then dies instantly with 'CONF: unknown config option: nocapture=servername'
+    and repeats forever under systemd's Restart=always (visible as endless
+    fast crash-loop in the log with no scanning progress). Strip any 'nocapture'
+    line before resuming; harmless no-op if masscan ever fixes this upstream."""
+    if not os.path.exists(MASS_PAUSED):
+        return
+    try:
+        with open(MASS_PAUSED) as f:
+            lines = f.readlines()
+        cleaned = [l for l in lines if not l.strip().lower().startswith("nocapture")]
+        if cleaned != lines:
+            with open(MASS_PAUSED, "w") as f:
+                f.writelines(cleaned)
+    except Exception:
+        pass
+
 def _masscan_cmd(cfg, resume=False):
     if resume and os.path.exists(MASS_PAUSED):
+        _sanitize_paused_conf()
         # masscan allows overriding a handful of options (rate, wait) on top of
         # a resumed scan — without passing --rate here, resume silently reuses
         # whatever rate was active when it was paused, ignoring any rate change

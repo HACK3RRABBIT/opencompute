@@ -58,6 +58,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ continuous scan auto-start failed: {e}")
     yield
+    # ── Graceful shutdown ──────────────────────────────────────────
+    # Without this, SIGTERM only tears down the asyncio/uvicorn side —
+    # the long-lived masscan child process (raw sockets, its own signal
+    # handling) is left running as a sibling in the same process/cgroup.
+    # systemd then waits for the whole cgroup to empty, times out after
+    # TimeoutStopSec, and SIGKILLs everything (losing masscan's chance to
+    # write its --resume checkpoint cleanly). Stopping it here — SIGINT so
+    # masscan saves paused.conf — lets the process actually exit on its own
+    # well within systemd's stop timeout.
+    print("🛑 shutting down — stopping continuous scan + masscan...")
+    try:
+        scanner.stop_continuous()
+    except Exception as e:
+        print(f"⚠️ error stopping continuous scan/masscan on shutdown: {e}")
+    print("✅ shutdown cleanup done")
 
 app = FastAPI(title="OpenCompute")
 app.router.lifespan_context = lifespan
