@@ -239,12 +239,25 @@
     <div class="tab-page active" id="tab-dashboard">
       <div class="stats" id="stats"></div>
 
+      <div class="panel" id="ipProgressPanel">
+        <div class="panel-head">
+          <span>🌍 <span data-i18n="ipScanProgress">IPv4 Internet Scan Progress</span></span>
+          <span id="ipProgressPct" style="color:var(--primary);font-weight:600"></span>
+        </div>
+        <div class="panel-body">
+          <div id="ipProgressBarOuter" style="background:var(--muted);border-radius:6px;overflow:hidden;height:26px;position:relative">
+            <div id="ipProgressBarInner" style="background:linear-gradient(90deg,var(--primary),var(--warning));height:100%;width:0%;transition:width 0.6s ease;display:flex;align-items:center;justify-content:flex-end;padding-right:6px;box-sizing:border-box"></div>
+          </div>
+          <div id="ipProgressDetail" style="font-size:12px;color:var(--muted-foreground);margin-top:8px"></div>
+        </div>
+      </div>
+
       <div class="panel">
         <div class="panel-head" data-i18n="scanControl">Scan Control</div>
         <div class="panel-body">
           <div class="controls">
-            <button onclick="startScan()">▶ <span data-i18n="startScan">Start Scan</span></button>
-            <button class="stop" onclick="stopScan()">⏹ <span data-i18n="stopScan">Stop Scan</span></button>
+            <button id="btnStartScan" onclick="startScan()">▶ <span data-i18n="startScan">Start Scan</span></button>
+            <button id="btnStopScan" class="stop" onclick="stopScan()">⏹ <span data-i18n="stopScan">Stop Scan</span></button>
             <button id="btnContinuous" onclick="toggleContinuous()">🔁 <span id="continuousLabel" data-i18n="startContinuous">Continuous Auto-Scan</span></button>
             <input type="text" id="manualTarget" data-i18n-placeholder="manualPlaceholder" placeholder="IP / domain / full URL — e.g. http://1.2.3.4:11434">
             <button onclick="addManual()">➕ <span data-i18n="addManual">Add Manually</span></button>
@@ -414,8 +427,8 @@
           </div>
           <div class="controls" style="margin-top:12px">
             <button onclick="saveMasscanConfig()" data-i18n="save">Save</button>
-            <button onclick="startMasscan()">▶ <span data-i18n="masscanStart">Start Sweep</span></button>
-            <button class="stop" onclick="stopMasscan()">⏹ <span data-i18n="masscanStop">Stop Sweep</span></button>
+            <button id="masscanStartBtn" onclick="startMasscan()">▶ <span data-i18n="masscanStart">Start Sweep</span></button>
+            <button id="masscanStopBtn" class="stop" onclick="stopMasscan()">⏹ <span data-i18n="masscanStop">Stop Sweep</span></button>
           </div>
           <div id="masscanLog" style="font-size:11px;color:var(--muted-foreground);margin-top:8px"></div>
         </div>
@@ -484,6 +497,7 @@ const I18N = {
     masscanTarget: "هدف", masscanRate: "نرخ (بسته/ثانیه)", masscanPorts: "پورت‌ها",
     masscanStart: "شروع اسکن", masscanStop: "توقف اسکن",
     masscanRunning: "در حال اسکن", masscanStopped: "متوقف", masscanError: "خطا",
+    ipScanProgress: "پیشرفت اسکن کل IPv4 اینترنت",
     scannerKeysSettings: "کلیدهای API منابع اسکن",
     scannerKeysDesc: "برای هر منبع، کلید API خودت رو وارد کن. قبل از فعال‌شدن، سیستم به‌صورت خودکار کلید رو تست می‌کنه.",
   },
@@ -528,6 +542,7 @@ const I18N = {
     masscanTarget: "Target", masscanRate: "Rate (packets/sec)", masscanPorts: "Ports",
     masscanStart: "Start Sweep", masscanStop: "Stop Sweep",
     masscanRunning: "Running", masscanStopped: "Stopped", masscanError: "Error",
+    ipScanProgress: "Whole IPv4 Internet Scan Progress",
     scannerKeysSettings: "Scan Source API Keys",
     scannerKeysDesc: "Enter your own API key for each source. The system tests it automatically before enabling.",
   }
@@ -610,6 +625,12 @@ async function refresh() {
   document.getElementById('footerState').innerText = s.running ? t('scanning2') : t('idle');
   document.getElementById('topScanState').innerText = s.running ? `${s.phase} (${s.checked}/${s.total})` : '';
 
+  // Mutually exclusive Start/Stop for the validation scan round.
+  const btnStart = document.getElementById('btnStartScan');
+  const btnStop = document.getElementById('btnStopScan');
+  if (btnStart) btnStart.disabled = !!s.running;
+  if (btnStop) btnStop.disabled = !s.running;
+
   const btnCont = document.getElementById('btnContinuous');
   const contLabel = document.getElementById('continuousLabel');
   if (s.continuous) {
@@ -620,9 +641,41 @@ async function refresh() {
     contLabel.innerText = t('startContinuous');
   }
 
+  renderIpProgress(s.masscan);
+
   await loadSourceChart();
   if (CURRENT_TAB === 'nodes') await loadNodes();
   if (CURRENT_TAB === 'models') await loadModels();
+}
+
+// Total routable IPv4 space masscan actually walks once the standard
+// reserved/private/multicast ranges are excluded (see DEFAULT_MASSCAN_EXCLUDES
+// in scanner.py) — used as the denominator for the "% of the whole internet
+// scanned" bar so the percentage matches what masscan itself reports.
+const ROUTABLE_IPV4_COUNT = 3724344320; // matches masscan's own "Scanning N hosts" log line
+
+function renderIpProgress(mc) {
+  const panel = document.getElementById('ipProgressPanel');
+  const bar = document.getElementById('ipProgressBarInner');
+  const pctLabel = document.getElementById('ipProgressPct');
+  const detail = document.getElementById('ipProgressDetail');
+  if (!panel || !bar) return;
+  if (!mc || (!mc.running && mc.percent_done == null && !mc.found)) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+  const pct = mc.percent_done != null ? mc.percent_done : 0;
+  const scannedIps = Math.round(ROUTABLE_IPV4_COUNT * (pct / 100));
+  const remainingPct = Math.max(0, 100 - pct);
+  bar.style.width = Math.max(pct, 0.3) + '%'; // floor so a sliver is always visible, not invisible at 0.01%
+  bar.innerText = pct >= 3 ? pct.toFixed(2) + '%' : '';
+  pctLabel.innerText = pct.toFixed(4) + '%';
+  const statusIcon = mc.running ? '🛰' : '⏸';
+  const statusWord = mc.running ? t('masscanRunning') : t('masscanStopped');
+  detail.innerHTML = LANG === 'fa'
+    ? `${statusIcon} ${statusWord} — <b>${scannedIps.toLocaleString()}</b> آی‌پی اسکن شده از <b>${ROUTABLE_IPV4_COUNT.toLocaleString()}</b> (${remainingPct.toFixed(2)}٪ باقی‌مانده) — ${(mc.found ?? 0).toLocaleString()} پورت باز پیدا شده — نرخ ${(mc.config?.rate ?? 0).toLocaleString()} بسته/ثانیه روی پورت‌های ${mc.config?.ports ?? ''}`
+    : `${statusIcon} ${statusWord} — <b>${scannedIps.toLocaleString()}</b> IPs scanned out of <b>${ROUTABLE_IPV4_COUNT.toLocaleString()}</b> (${remainingPct.toFixed(2)}% remaining) — ${(mc.found ?? 0).toLocaleString()} open ports found — rate ${(mc.config?.rate ?? 0).toLocaleString()} pps on ports ${mc.config?.ports ?? ''}`;
 }
 
 function sourceLabel(src) {
@@ -873,6 +926,12 @@ function renderMasscanStatus(status) {
   }
   if (status.last_error) txt += ` — ${t('masscanError')}: ${status.last_error}`;
   el.innerText = txt;
+  // Mutually exclusive controls: while sweeping, only Stop makes sense (Start
+  // would just no-op into "already running"); while stopped, only Start does.
+  const startBtn = document.getElementById('masscanStartBtn');
+  const stopBtn = document.getElementById('masscanStopBtn');
+  if (startBtn) startBtn.disabled = !!status.running;
+  if (stopBtn) stopBtn.disabled = !status.running;
 }
 
 async function loadMasscanSettings() {

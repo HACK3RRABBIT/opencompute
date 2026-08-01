@@ -19,7 +19,7 @@ import requests
 
 DB = "opencompute.db"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-TIMEOUTS = {"tcp": 3, "probe": 6, "gen": 15}
+TIMEOUTS = {"tcp": 3, "probe": 6, "gen": 45}
 
 # Paid/proprietary model names we never want to list — these run through a gateway
 # that bills a real API key (OpenAI/Anthropic/Google/etc). Even if a node proxies them,
@@ -227,7 +227,15 @@ def get_masscan_config():
     return {
         "target": get_setting("masscan_target", "0.0.0.0/0"),
         "rate": int(get_setting("masscan_rate", "100000")),
-        "ports": get_setting("masscan_ports", "11434"),
+        # Common LLM-serving ports beyond Ollama's default: vLLM (8000), LM
+        # Studio (1234), text-generation-webui (5000/7860), OpenWebUI (8080/3000),
+        # llama.cpp server (8081), KoboldCpp (5001). NOTE: scanning N ports
+        # instead of 1 multiplies total packets ~Nx for the same target range
+        # at the same pps rate (masscan doesn't get it "for free") — it makes
+        # the full sweep take proportionally longer, not use more bandwidth
+        # per second. Trim this list via Settings if sweep speed matters more
+        # than port coverage.
+        "ports": get_setting("masscan_ports", "11434,8000,1234,5000,7860,8080,3000,8081,5001"),
         "excludes": get_setting("masscan_excludes", DEFAULT_MASSCAN_EXCLUDES),
     }
 
@@ -852,12 +860,36 @@ def _make_challenge():
          just parrot big chunks of the prompt back verbatim instead of
          actually answering it."""
     token = "".join(random.choices(string.ascii_uppercase, k=6))
-    prompt = f"Reply with ONLY this word and nothing else: {token}"
+    prompt = (f"Reply with ONLY this word and nothing else, no explanation, "
+              f"no thinking, no other text: {token}")
     return token, prompt
 
 def _response_honors_challenge(text: str, token: str) -> bool:
-    """The reply must contain the literal token we asked for."""
+    """The reply must contain the literal token we asked for. Reasoning models
+    (DeepSeek-R1, QwQ, etc) wrap a long chain-of-thought in <think>...</think>
+    before the actual answer — we don't strip it, we just check the token
+    appears ANYWHERE in the full text (thinking included), since some models
+    echo the target word during their reasoning too and that's still proof
+    the model saw and processed the prompt correctly."""
     return bool(text) and token in text.upper()
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>...</think> / <reasoning>...</reasoning> chain-of-thought
+    blocks that reasoning models (DeepSeek-R1, QwQ, etc) emit before their
+    actual answer. Without this, a real reasoning model that restates the
+    prompt inside its own thinking ('The user wants me to reply with only
+    this word...') gets misclassified as an echo-bot by _looks_like_prompt_echo,
+    since that restated text is a long verbatim match of our instructions."""
+    if not text:
+        return text
+    stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.I | re.S)
+    stripped = re.sub(r"<reasoning>.*?</reasoning>", "", stripped, flags=re.I | re.S)
+    # Some backends never close the tag if generation was cut short — if there's
+    # an opening <think> with no closing tag, drop everything from there on
+    # (it's all still "thinking", not the answer) rather than treating the
+    # dangling reasoning text as the final answer.
+    stripped = re.sub(r"<think>.*", "", stripped, flags=re.I | re.S)
+    return stripped.strip() or text  # never return empty if all we had was thinking-less real content
 
 def _looks_like_prompt_echo(prompt: str, response: str, min_run=25) -> bool:
     """True if the response contains a long verbatim substring of the prompt
@@ -865,9 +897,10 @@ def _looks_like_prompt_echo(prompt: str, response: str, min_run=25) -> bool:
     back (optionally with a canned prefix like 'Thanks for your prompt...')
     rather than actually answering it. A real model paraphrasing or briefly
     quoting a few words is fine; copying 25+ consecutive characters of our
-    own instruction text is not something a genuine answer would do."""
+    own instruction text is not something a genuine answer would do. Checked
+    only against the post-thinking portion — see _strip_thinking()."""
     p = prompt.lower()
-    r = response.lower()
+    r = _strip_thinking(response).lower()
     if len(p) < min_run:
         return False
     for i in range(0, len(p) - min_run, 5):
@@ -925,7 +958,7 @@ def real_test(host, port, scheme, model, api_style):
         if api_style == "/v1/models":
             r = requests.post(f"{scheme}://{host}:{port}/v1/chat/completions",
                 json={"model": model, "messages": [{"role": "user", "content": prompt}],
-                      "max_tokens": 16, "temperature": 0, "stream": False},
+                      "max_tokens": 200, "temperature": 0, "stream": False},
                 headers={"User-Agent": UA}, timeout=TIMEOUTS["gen"])
             if r.status_code == 200:
                 text = r.text.strip()
@@ -960,7 +993,7 @@ def real_test(host, port, scheme, model, api_style):
         else:
             r = requests.post(f"{scheme}://{host}:{port}/api/generate",
                 json={"model": model, "prompt": prompt, "stream": False,
-                      "options": {"num_predict": 16, "temperature": 0}},
+                      "options": {"num_predict": 200, "temperature": 0}},
                 headers={"User-Agent": UA}, timeout=TIMEOUTS["gen"])
             if r.status_code == 200:
                 text = r.text.strip()
